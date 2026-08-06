@@ -1,0 +1,154 @@
+# ============================================================
+# PAGINA: CONFERITORI DI LATTE
+# Elenco, attivazione/disattivazione, ordine, dati specifici
+# per allevatori / caseifici-intermediari / congelatori.
+# ============================================================
+import streamlit as st
+import datetime as _dt
+from db import get_client
+from auth import login_form, logout_button, is_owner
+
+st.set_page_config(page_title="Conferitori", layout="wide")
+if not login_form():
+    st.stop()
+logout_button()
+client = get_client()
+
+st.title("Conferitori di latte")
+
+caseificio_id = st.session_state.get("caseificio_id")
+if not caseificio_id:
+    st.info("Seleziona un caseificio dalla pagina principale.")
+    st.stop()
+
+TIPI_LATTE = ["bufala_dop", "bufala", "vaccino", "cagliata_bufala",
+              "cagliata_vaccino", "bufala_congelato", "vaccino_congelato", "altro"]
+
+# ------------------------------------------------------------
+# BLOCCO: NUOVO CONFERITORE
+# ------------------------------------------------------------
+if is_owner():
+    with st.expander("➕ Nuovo conferitore"):
+        with st.form("nuovo_conferitore"):
+            tipo = st.selectbox("Tipo di conferitore", ["allevatore", "caseificio", "intermediario", "congelatore"])
+            ragione_sociale = st.text_input("Ragione sociale")
+            sede_legale = st.text_input("Sede legale")
+            sede_operativa = st.text_input("Sede operativa")
+            piva = st.text_input("P.IVA")
+            tipi_latte = st.multiselect("Tipi di latte conferiti", TIPI_LATTE)
+            ordine = st.number_input("Ordine di visualizzazione", min_value=1, step=1)
+
+            if st.form_submit_button("Salva conferitore"):
+                nuovo = client.table("conferitori").insert({
+                    "caseificio_id": caseificio_id,
+                    "tipo": tipo,
+                    "ragione_sociale": ragione_sociale,
+                    "sede_legale": sede_legale,
+                    "sede_operativa": sede_operativa,
+                    "piva": piva,
+                    "ordine": int(ordine),
+                }).execute().data[0]
+
+                for tl in tipi_latte:
+                    client.table("conferitori_tipi_latte").insert({
+                        "conferitore_id": nuovo["id"], "tipo_latte": tl
+                    }).execute()
+
+                st.success("Conferitore salvato. Apri 'Modifica' per aggiungere dati sanitari/documenti.")
+                st.rerun()
+
+st.divider()
+
+# ------------------------------------------------------------
+# BLOCCO: ELENCO CONFERITORI
+# ------------------------------------------------------------
+st.subheader("Elenco conferitori")
+
+conferitori = (
+    client.table("conferitori")
+    .select("*, conferitori_tipi_latte(tipo_latte)")
+    .eq("caseificio_id", caseificio_id)
+    .order("ordine")
+    .execute()
+    .data
+)
+
+if not conferitori:
+    st.info("Nessun conferitore inserito.")
+else:
+    for c in conferitori:
+        tipi = ", ".join([t["tipo_latte"] for t in c.get("conferitori_tipi_latte", [])]) or "-"
+        col1, col2, col3 = st.columns([1, 4, 2])
+        with col1:
+            nuovo_stato = st.checkbox("Attivo", value=c["attivo"], key=f"att_{c['id']}")
+            if nuovo_stato != c["attivo"] and is_owner():
+                client.table("conferitori").update({"attivo": nuovo_stato}).eq("id", c["id"]).execute()
+                st.rerun()
+        with col2:
+            st.write(f"**#{c['ordine']} - {c['ragione_sociale']}** ({c['tipo']}) — latte: {tipi}")
+        with col3:
+            if is_owner():
+                with st.popover("Modifica"):
+                    st.write("**Dati sanitari / documenti**")
+                    if c["tipo"] == "allevatore":
+                        with st.form(f"sanitario_{c['id']}"):
+                            tipo_es = st.selectbox("Tipo esame", ["brucellosi", "tubercolosi", "leucosi",
+                                                                    "carica_batterica", "cellule_somatiche"],
+                                                     key=f"tipoes_{c['id']}")
+                            valore = st.number_input("Valore (se applicabile)", value=0.0, key=f"val_{c['id']}")
+                            rilascio = st.date_input("Data rilascio", value=_dt.date.today(), key=f"ril_{c['id']}")
+                            scadenza = st.date_input("Data scadenza", value=_dt.date.today(), key=f"sca_{c['id']}")
+                            if st.form_submit_button("Aggiungi esame"):
+                                client.table("stati_sanitari").insert({
+                                    "conferitore_id": c["id"], "tipo": tipo_es,
+                                    "valore": valore, "data_rilascio": str(rilascio),
+                                    "data_scadenza": str(scadenza),
+                                }).execute()
+                                st.success("Salvato.")
+                                st.rerun()
+                    else:
+                        doc_tipo = "autocertificazione" if c["tipo"] in ("caseificio", "intermediario") else "contratto"
+                        with st.form(f"doc_{c['id']}"):
+                            scadenza = st.date_input(f"Scadenza {doc_tipo}", value=_dt.date.today(), key=f"docsca_{c['id']}")
+                            if st.form_submit_button(f"Salva {doc_tipo}"):
+                                client.table("documenti_conferitori").insert({
+                                    "conferitore_id": c["id"], "tipo": doc_tipo,
+                                    "data_scadenza": str(scadenza),
+                                }).execute()
+                                st.success("Salvato.")
+                                st.rerun()
+
+# ------------------------------------------------------------
+# BLOCCO: AVVISI SCADENZE
+# ------------------------------------------------------------
+st.divider()
+st.subheader("⚠️ Avvisi scadenze")
+oggi = _dt.date.today()
+sanitari = client.table("stati_sanitari").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
+docs = client.table("documenti_conferitori").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
+
+avvisi = []
+for s in sanitari:
+    conf = s.get("conferitori") or {}
+    if conf.get("caseificio_id") != caseificio_id or not s.get("data_scadenza"):
+        continue
+    sc = _dt.date.fromisoformat(s["data_scadenza"])
+    if sc < oggi:
+        avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {s['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
+    elif (sc - oggi).days <= 15:
+        avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {s['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
+for d in docs:
+    conf = d.get("conferitori") or {}
+    if conf.get("caseificio_id") != caseificio_id or not d.get("data_scadenza"):
+        continue
+    sc = _dt.date.fromisoformat(d["data_scadenza"])
+    if sc < oggi:
+        avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {d['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
+    elif (sc - oggi).days <= 15:
+        avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {d['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
+
+if avvisi:
+    for a in avvisi:
+        st.write(a)
+else:
+    st.write("Nessuna scadenza imminente.")
