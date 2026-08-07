@@ -121,60 +121,75 @@ if is_owner():
             st.info("Nessun dato da salvare.")
 
 st.divider()
+st.divider()
 
 # ------------------------------------------------------------
-# BLOCCO: MOVIMENTI LATTE CONGELATO
+# BLOCCO: VENDITA / CESSIONE LATTE
 # ------------------------------------------------------------
-st.subheader("❄️ Movimenti latte congelato")
-mcol1, mcol2 = st.columns(2)
-with mcol1:
-    with st.expander("➕ Registra scongelamento (si somma alla Bufala non-DOP)"):
-        with st.form("nuovo_scongelamento"):
-            data_sc = st.date_input("Data", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine)
-            kg_sc = st.number_input("KG scongelati", min_value=0.0, step=1.0)
-            note_sc = st.text_input("Nota (facoltativa)")
-            if st.form_submit_button("Salva scongelamento"):
-                client.table("movimenti_congelato").insert({
-                    "caseificio_id": caseificio_id, "data": str(data_sc),
-                    "tipo": "scongelamento", "kg": kg_sc, "note": note_sc,
+st.subheader("A chi vendo/cedo il latte")
+
+if is_owner():
+    with st.expander("➕ Nuovo destinatario vendita"):
+        with st.form("nuovo_destinatario"):
+            v_tipo = st.selectbox("Tipo destinatario", ["caseificio", "intermediario", "congelatore_conto"],
+                                    format_func=lambda x: {"caseificio": "Caseificio", "intermediario": "Intermediario",
+                                                            "congelatore_conto": "Congelatore (conto congelamento)"}[x])
+            v_ragione_sociale = st.text_input("Ragione sociale", key="v_rs_new")
+            v_sede_legale = st.text_input("Sede legale", key="v_sl_new")
+            v_sede_operativa = st.text_input("Sede operativa", key="v_so_new")
+            v_piva = st.text_input("P.IVA", key="v_piva_new")
+            if st.form_submit_button("Salva destinatario"):
+                client.table("destinatari_vendita").insert({
+                    "caseificio_id": caseificio_id, "tipo": v_tipo,
+                    "ragione_sociale": v_ragione_sociale, "sede_legale": v_sede_legale,
+                    "sede_operativa": v_sede_operativa, "piva": v_piva,
                 }).execute()
-                st.success("Registrato.")
-                st.rerun()
-with mcol2:
-    with st.expander("➕ Registra congelamento (bufala DOP o non-DOP)"):
-        with st.form("nuovo_congelamento"):
-            data_cg = st.date_input("Data ", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine)
-            origine_cg = st.radio("Origine", ["bufala_dop", "bufala"], format_func=lambda x: "Bufala DOP" if x == "bufala_dop" else "Bufala")
-            kg_cg = st.number_input("KG messi in congelamento", min_value=0.0, step=1.0)
-            note_cg = st.text_input("Nota (facoltativa) ")
-            if st.form_submit_button("Salva congelamento"):
-                client.table("movimenti_congelato").insert({
-                    "caseificio_id": caseificio_id, "data": str(data_cg),
-                    "tipo": "congelamento", "origine": origine_cg, "kg": kg_cg, "note": note_cg,
-                }).execute()
-                st.success("Registrato.")
+                st.success("Destinatario salvato.")
                 st.rerun()
 
-movimenti = (
-    client.table("movimenti_congelato")
+destinatari = (
+    client.table("destinatari_vendita")
     .select("*")
     .eq("caseificio_id", caseificio_id)
-    .gte("data", str(periodo_inizio))
-    .lte("data", str(periodo_fine))
-    .order("data")
+    .order("ragione_sociale")
     .execute()
     .data
 )
-if movimenti:
-    st.table([{
-        "Data": _dt.date.fromisoformat(m["data"]).strftime("%d/%m/%Y"),
-        "Tipo": "Scongelamento" if m["tipo"] == "scongelamento" else "Congelamento",
-        "Origine": ("Bufala DOP" if m.get("origine") == "bufala_dop" else "Bufala") if m.get("origine") else "-",
-        "KG": m["kg"],
-        "Nota": m.get("note") or "-",
-    } for m in movimenti])
 
-st.divider()
+TIPO_DEST_LABEL = {"caseificio": "Caseificio", "intermediario": "Intermediario", "congelatore_conto": "Congelatore (conto congelamento)"}
+
+if not destinatari:
+    st.info("Nessun destinatario di vendita inserito.")
+else:
+    for v in destinatari:
+        vcol1, vcol2, vcol3 = st.columns([1, 4, 2])
+        with vcol1:
+            v_attivo = st.checkbox("Attivo", value=v["attivo"], key=f"vatt_{v['id']}")
+            if v_attivo != v["attivo"] and is_owner():
+                client.table("destinatari_vendita").update({"attivo": v_attivo}).eq("id", v["id"]).execute()
+                st.rerun()
+        with vcol2:
+            st.write(f"**{v['ragione_sociale']}** ({TIPO_DEST_LABEL.get(v['tipo'], v['tipo'])})")
+        with vcol3:
+            if is_owner():
+                with st.popover("✏️ Gestisci"):
+                    with st.form(f"modifica_destinatario_{v['id']}"):
+                        vm_ragione_sociale = st.text_input("Ragione sociale", value=v["ragione_sociale"], key=f"vm_rs_{v['id']}")
+                        vm_sede_legale = st.text_input("Sede legale", value=v.get("sede_legale") or "", key=f"vm_sl_{v['id']}")
+                        vm_sede_operativa = st.text_input("Sede operativa", value=v.get("sede_operativa") or "", key=f"vm_so_{v['id']}")
+                        vm_piva = st.text_input("P.IVA", value=v.get("piva") or "", key=f"vm_piva_{v['id']}")
+                        if st.form_submit_button("Salva modifiche"):
+                            client.table("destinatari_vendita").update({
+                                "ragione_sociale": vm_ragione_sociale, "sede_legale": vm_sede_legale,
+                                "sede_operativa": vm_sede_operativa, "piva": vm_piva,
+                            }).eq("id", v["id"]).execute()
+                            st.success("Aggiornato.")
+                            st.rerun()
+                    st.divider()
+                    if st.button("🗑️ Elimina destinatario", key=f"vdel_{v['id']}"):
+                        client.table("destinatari_vendita").delete().eq("id", v["id"]).execute()
+                        st.success("Eliminato.")
+                        st.rerun()
 
 # ------------------------------------------------------------
 # BLOCCO: TOTALE PER CONFERITORE NEL PERIODO
