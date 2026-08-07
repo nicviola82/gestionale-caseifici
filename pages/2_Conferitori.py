@@ -152,3 +152,72 @@ if avvisi:
         st.write(a)
 else:
     st.write("Nessuna scadenza imminente.")
+    st.divider()
+
+# ------------------------------------------------------------
+# BLOCCO: VENDITA / CESSIONE LATTE
+# ------------------------------------------------------------
+st.subheader("A chi vendo/cedo il latte")
+
+if is_owner():
+    with st.expander("➕ Nuovo destinatario vendita"):
+        with st.form("nuovo_destinatario"):
+            v_tipo = st.selectbox("Tipo destinatario", ["caseificio", "intermediario", "congelatore_conto"],
+                                    format_func=lambda x: {"caseificio": "Caseificio", "intermediario": "Intermediario",
+                                                            "congelatore_conto": "Congelatore (conto congelamento)"}[x])
+            v_ragione_sociale = st.text_input("Ragione sociale", key="v_rs_new")
+            v_sede_legale = st.text_input("Sede legale", key="v_sl_new")
+            v_sede_operativa = st.text_input("Sede operativa", key="v_so_new")
+            v_piva = st.text_input("P.IVA", key="v_piva_new")
+            if st.form_submit_button("Salva destinatario"):
+                client.table("destinatari_vendita").insert({
+                    "caseificio_id": caseificio_id, "tipo": v_tipo,
+                    "ragione_sociale": v_ragione_sociale, "sede_legale": v_sede_legale,
+                    "sede_operativa": v_sede_operativa, "piva": v_piva,
+                }).execute()
+                st.success("Destinatario salvato.")
+                st.rerun()
+
+destinatari = (
+    client.table("destinatari_vendita")
+    .select("*")
+    .eq("caseificio_id", caseificio_id)
+    .order("ragione_sociale")
+    .execute()
+    .data
+)
+
+TIPO_DEST_LABEL = {"caseificio": "Caseificio", "intermediario": "Intermediario", "congelatore_conto": "Congelatore (conto congelamento)"}
+
+if not destinatari:
+    st.info("Nessun destinatario di vendita inserito.")
+else:
+    for v in destinatari:
+        vcol1, vcol2, vcol3 = st.columns([1, 4, 2])
+        with vcol1:
+            v_attivo = st.checkbox("Attivo", value=v["attivo"], key=f"vatt_{v['id']}")
+            if v_attivo != v["attivo"] and is_owner():
+                client.table("destinatari_vendita").update({"attivo": v_attivo}).eq("id", v["id"]).execute()
+                st.rerun()
+        with vcol2:
+            st.write(f"**{v['ragione_sociale']}** ({TIPO_DEST_LABEL.get(v['tipo'], v['tipo'])})")
+        with vcol3:
+            if is_owner():
+                with st.popover("✏️ Gestisci"):
+                    with st.form(f"modifica_destinatario_{v['id']}"):
+                        vm_ragione_sociale = st.text_input("Ragione sociale", value=v["ragione_sociale"], key=f"vm_rs_{v['id']}")
+                        vm_sede_legale = st.text_input("Sede legale", value=v.get("sede_legale") or "", key=f"vm_sl_{v['id']}")
+                        vm_sede_operativa = st.text_input("Sede operativa", value=v.get("sede_operativa") or "", key=f"vm_so_{v['id']}")
+                        vm_piva = st.text_input("P.IVA", value=v.get("piva") or "", key=f"vm_piva_{v['id']}")
+                        if st.form_submit_button("Salva modifiche"):
+                            client.table("destinatari_vendita").update({
+                                "ragione_sociale": vm_ragione_sociale, "sede_legale": vm_sede_legale,
+                                "sede_operativa": vm_sede_operativa, "piva": vm_piva,
+                            }).eq("id", v["id"]).execute()
+                            st.success("Aggiornato.")
+                            st.rerun()
+                    st.divider()
+                    if st.button("🗑️ Elimina destinatario", key=f"vdel_{v['id']}"):
+                        client.table("destinatari_vendita").delete().eq("id", v["id"]).execute()
+                        st.success("Eliminato.")
+                        st.rerun()
