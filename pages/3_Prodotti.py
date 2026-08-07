@@ -1,7 +1,8 @@
 # ============================================================
 # PAGINA: PRODOTTI
-# Elenco prodotti del caseificio, attivazione, tipo lotto,
-# giorni di scadenza, resa automatica (solo ricotta).
+# Elenco prodotti del caseificio, attivazione, modifica, eliminazione,
+# tipo lotto, giorni di scadenza, resa automatica (solo ricotta),
+# visibilita' nello schema Produzioni, vendita a piu' terzi.
 # ============================================================
 import streamlit as st
 from db import get_client
@@ -28,6 +29,13 @@ PRODOTTI_BASE = [
     "Mozzarella di latte di Bufala senza lattosio", "Mozzarella DOP senza lattosio",
 ]
 
+TIPI_LOTTO = ["data_produzione", "data_scadenza", "giuliano"]
+TIPI_LOTTO_LABEL = {
+    "data_produzione": "Data di produzione",
+    "data_scadenza": "Data di scadenza",
+    "giuliano": "Calendario giuliano (1-366)",
+}
+
 # ------------------------------------------------------------
 # BLOCCO: NUOVO PRODOTTO
 # ------------------------------------------------------------
@@ -38,11 +46,13 @@ if is_owner():
             if nome == "Altro...":
                 nome = st.text_input("Nome prodotto personalizzato")
             is_dop = st.checkbox("Prodotto DOP")
-            tipo_lotto = st.radio("Tipo di lotto", ["data_produzione", "giuliano"], horizontal=True)
+            tipo_lotto = st.radio("Tipo di lotto", TIPI_LOTTO, format_func=lambda x: TIPI_LOTTO_LABEL[x], horizontal=True)
             giorni_scadenza = st.number_input("Giorni di scadenza dalla produzione (es. 12)", min_value=0, step=1)
             resa = None
             if "ricotta" in nome.lower():
                 resa = st.number_input("Resa automatica (% del latte lavorato)", min_value=0.0, max_value=100.0, value=3.5)
+            mostra_produzioni = st.checkbox("Mostra questo prodotto nello schema Produzioni", value=True)
+            consente_piu_terzi = st.checkbox("Consenti piu' destinatari per la vendita a terzi (es. mozzarella)")
 
             if st.form_submit_button("Salva prodotto"):
                 client.table("prodotti").insert({
@@ -52,6 +62,8 @@ if is_owner():
                     "tipo_lotto": tipo_lotto,
                     "giorni_scadenza": int(giorni_scadenza),
                     "resa_automatica_percent": resa,
+                    "mostra_in_produzioni": mostra_produzioni,
+                    "consente_piu_terzi": consente_piu_terzi,
                 }).execute()
                 st.success("Prodotto salvato.")
                 st.rerun()
@@ -76,7 +88,7 @@ if not prodotti:
     st.info("Nessun prodotto inserito.")
 else:
     for p in prodotti:
-        col1, col2 = st.columns([1, 5])
+        col1, col2, col3, col4 = st.columns([1, 4, 1, 1])
         with col1:
             nuovo_stato = st.checkbox("Attivo", value=p["attivo"], key=f"prod_att_{p['id']}")
             if nuovo_stato != p["attivo"] and is_owner():
@@ -84,6 +96,59 @@ else:
                 st.rerun()
         with col2:
             dop_lbl = " (DOP)" if p["is_dop"] else ""
-            lotto_lbl = "gg giuliano" if p["tipo_lotto"] == "giuliano" else "data produzione"
+            lotto_lbl = TIPI_LOTTO_LABEL.get(p["tipo_lotto"], p["tipo_lotto"])
+            extra = []
+            if not p.get("mostra_in_produzioni", True):
+                extra.append("nascosto da Produzioni")
+            if p.get("consente_piu_terzi"):
+                extra.append("multi-terzi")
+            extra_txt = f" [{', '.join(extra)}]" if extra else ""
             st.write(f"**{p['nome']}{dop_lbl}** — lotto: {lotto_lbl}, scadenza: +{p.get('giorni_scadenza') or 0} giorni"
-                     + (f", resa automatica {p['resa_automatica_percent']}%" if p.get("resa_automatica_percent") else ""))
+                     + (f", resa automatica {p['resa_automatica_percent']}%" if p.get("resa_automatica_percent") else "")
+                     + extra_txt)
+        with col3:
+            if is_owner():
+                with st.popover("✏️ Modifica"):
+                    with st.form(f"modifica_prodotto_{p['id']}"):
+                        m_nome = st.text_input("Nome prodotto", value=p["nome"], key=f"m_nome_{p['id']}")
+                        m_is_dop = st.checkbox("Prodotto DOP", value=p["is_dop"], key=f"m_dop_{p['id']}")
+                        m_tipo_lotto = st.radio(
+                            "Tipo di lotto", TIPI_LOTTO, format_func=lambda x: TIPI_LOTTO_LABEL[x],
+                            index=TIPI_LOTTO.index(p["tipo_lotto"]), key=f"m_lotto_{p['id']}",
+                        )
+                        m_giorni_scadenza = st.number_input(
+                            "Giorni di scadenza dalla produzione", min_value=0, step=1,
+                            value=p.get("giorni_scadenza") or 0, key=f"m_giorni_{p['id']}",
+                        )
+                        m_resa = st.number_input(
+                            "Resa automatica % (0 = nessuna)", min_value=0.0, max_value=100.0,
+                            value=float(p.get("resa_automatica_percent") or 0.0), key=f"m_resa_{p['id']}",
+                        )
+                        m_mostra_produzioni = st.checkbox(
+                            "Mostra nello schema Produzioni", value=p.get("mostra_in_produzioni", True), key=f"m_mostra_{p['id']}",
+                        )
+                        m_consente_piu_terzi = st.checkbox(
+                            "Consenti piu' destinatari per la vendita a terzi", value=p.get("consente_piu_terzi", False), key=f"m_multi_{p['id']}",
+                        )
+                        if st.form_submit_button("Salva modifiche"):
+                            client.table("prodotti").update({
+                                "nome": m_nome,
+                                "is_dop": m_is_dop,
+                                "tipo_lotto": m_tipo_lotto,
+                                "giorni_scadenza": int(m_giorni_scadenza),
+                                "resa_automatica_percent": m_resa if m_resa > 0 else None,
+                                "mostra_in_produzioni": m_mostra_produzioni,
+                                "consente_piu_terzi": m_consente_piu_terzi,
+                            }).eq("id", p["id"]).execute()
+                            st.success("Prodotto aggiornato.")
+                            st.rerun()
+        with col4:
+            if is_owner():
+                if st.button("🗑️", key=f"prod_del_{p['id']}", help="Elimina prodotto"):
+                    st.session_state[f"prod_conferma_del_{p['id']}"] = True
+                if st.session_state.get(f"prod_conferma_del_{p['id']}"):
+                    if st.button("Conferma eliminazione", key=f"prod_del_conferma_{p['id']}"):
+                        client.table("prodotti").delete().eq("id", p["id"]).execute()
+                        st.session_state.pop(f"prod_conferma_del_{p['id']}", None)
+                        st.success("Prodotto eliminato.")
+                        st.rerun()
