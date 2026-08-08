@@ -1,9 +1,8 @@
 # ============================================================
 # PAGINA: PRODUZIONI
 # Griglia stile Excel: prodotti attivi e visibili in colonna
-# (Totale / Diretta / Terzi), giorni del periodo in riga.
-# Per i prodotti "multi-terzi" e' possibile suddividere il
-# venduto a terzi tra piu' destinatari.
+# (solo Totale). Sotto, vendita diretta facoltativa per prodotto/
+# giorno con calcolo automatico dei terzi per differenza.
 # ============================================================
 import streamlit as st
 import pandas as pd
@@ -72,7 +71,7 @@ mappa_esistenti = {(e["prodotto_id"], e["data"]): e for e in esistenti}
 # BLOCCO: COSTRUZIONE GRIGLIA
 # ------------------------------------------------------------
 st.subheader("Griglia produzioni")
-st.caption("Per ogni prodotto: KG Totale, KG Diretta, KG Terzi. Ricorda di premere 'Salva produzioni' in fondo.")
+st.caption("Solo il Totale prodotto. Ricorda di premere 'Salva produzioni' in fondo.")
 
 def etichetta_prodotto(p):
     return f"{p['nome']} (DOP)" if p["is_dop"] else p["nome"]
@@ -83,8 +82,6 @@ for d in date_periodo:
     for p in prodotti:
         rec = mappa_esistenti.get((p["id"], str(d)))
         riga[f"p{p['id']} - Totale"] = float(rec["kg_totale"]) if rec and rec.get("kg_totale") is not None else 0.0
-        riga[f"p{p['id']} - Diretta"] = float(rec["kg_diretta"]) if rec and rec.get("kg_diretta") is not None else 0.0
-        riga[f"p{p['id']} - Terzi"] = float(rec["kg_terzi"]) if rec and rec.get("kg_terzi") is not None else 0.0
     righe.append(riga)
 
 df = pd.DataFrame(righe)
@@ -93,8 +90,6 @@ column_config = {"Data": st.column_config.TextColumn("Data", disabled=True)}
 for p in prodotti:
     etichetta = etichetta_prodotto(p)
     column_config[f"p{p['id']} - Totale"] = st.column_config.NumberColumn(f"{etichetta}\nTotale KG", min_value=0.0, step=1.0)
-    column_config[f"p{p['id']} - Diretta"] = st.column_config.NumberColumn(f"{etichetta}\nDiretta KG", min_value=0.0, step=1.0)
-    column_config[f"p{p['id']} - Terzi"] = st.column_config.NumberColumn(f"{etichetta}\nTerzi KG", min_value=0.0, step=1.0)
 
 df_modificato = st.data_editor(
     df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_produzioni"
@@ -106,16 +101,17 @@ if is_owner():
         for i, d in enumerate(date_periodo):
             for p in prodotti:
                 tot = df_modificato.loc[i, f"p{p['id']} - Totale"]
-                dir_ = df_modificato.loc[i, f"p{p['id']} - Diretta"]
-                terzi = df_modificato.loc[i, f"p{p['id']} - Terzi"]
-                if (tot and float(tot) > 0) or (dir_ and float(dir_) > 0) or (terzi and float(terzi) > 0):
+                if tot and float(tot) > 0:
+                    esistente = mappa_esistenti.get((p["id"], str(d)))
+                    dir_prec = float(esistente["kg_diretta"]) if esistente and esistente.get("kg_diretta") else 0.0
+                    dir_prec = min(dir_prec, float(tot))
                     records.append({
                         "caseificio_id": caseificio_id,
                         "prodotto_id": p["id"],
                         "data": str(d),
-                        "kg_totale": float(tot) if tot else 0.0,
-                        "kg_diretta": float(dir_) if dir_ else 0.0,
-                        "kg_terzi": float(terzi) if terzi else 0.0,
+                        "kg_totale": float(tot),
+                        "kg_diretta": dir_prec,
+                        "kg_terzi": float(tot) - dir_prec,
                     })
         if records:
             client.table("produzioni").upsert(records, on_conflict="prodotto_id,data").execute()
@@ -127,13 +123,48 @@ if is_owner():
 st.divider()
 
 # ------------------------------------------------------------
+# BLOCCO: VENDITA DIRETTA (OPZIONALE, TERZI CALCOLATO PER DIFFERENZA)
+# ------------------------------------------------------------
+st.subheader("Vendita diretta (facoltativo)")
+st.caption("Se per un prodotto in un giorno hai venduto direttamente una parte, indicalo qui: il resto viene calcolato automaticamente come venduto a terzi.")
+
+righe_con_totale = [(p, d) for p in prodotti for d in date_periodo if mappa_esistenti.get((p["id"], str(d))) and float(mappa_esistenti[(p["id"], str(d))].get("kg_totale") or 0) > 0]
+
+if not righe_con_totale:
+    st.info("Inserisci prima qualche totale nella griglia sopra e salva, poi torna qui per indicare la vendita diretta.")
+else:
+    prodotto_scelto_nome = st.selectbox("Prodotto", sorted({etichetta_prodotto(p) for p, _ in righe_con_totale}), key="diretta_prodotto")
+    prodotto_scelto = next(p for p, _ in righe_con_totale if etichetta_prodotto(p) == prodotto_scelto_nome)
+    date_disponibili = sorted({d for p, d in righe_con_totale if p["id"] == prodotto_scelto["id"]})
+    data_scelta = st.selectbox("Data", date_disponibili, format_func=lambda d: d.strftime("%d/%m/%Y"), key="diretta_data")
+
+    rec = mappa_esistenti.get((prodotto_scelto["id"], str(data_scelta)))
+    totale_giorno = float(rec["kg_totale"])
+    diretta_attuale = float(rec.get("kg_diretta") or 0)
+    st.caption(f"Totale prodotto quel giorno: {totale_giorno} kg")
+
+    if is_owner():
+        with st.form("form_diretta"):
+            nuova_diretta = st.number_input("KG venduti diretti", min_value=0.0, max_value=totale_giorno, step=1.0, value=diretta_attuale)
+            st.caption(f"Venduto a terzi (calcolato): {totale_giorno - nuova_diretta} kg")
+            if st.form_submit_button("Salva vendita diretta"):
+                client.table("produzioni").update({
+                    "kg_diretta": nuova_diretta,
+                    "kg_terzi": totale_giorno - nuova_diretta,
+                }).eq("id", rec["id"]).execute()
+                st.success("Salvato.")
+                st.rerun()
+
+st.divider()
+
+# ------------------------------------------------------------
 # BLOCCO: SUDDIVISIONE VENDITA A TERZI (PRODOTTI MULTI-TERZI)
 # ------------------------------------------------------------
 prodotti_multi = [p for p in prodotti if p.get("consente_piu_terzi")]
 
 if prodotti_multi:
     st.subheader("🔀 Suddivisione vendita a terzi tra più destinatari")
-    st.caption("Solo per i prodotti abilitati in Prodotti ('Consenti piu' destinatari'). Il totale delle righe qui sotto dovrebbe corrispondere al KG Terzi inserito nella griglia sopra per quel giorno/prodotto.")
+    st.caption("Solo per i prodotti abilitati in Prodotti ('Consenti piu' destinatari'). Il totale delle righe qui sotto dovrebbe corrispondere al KG Terzi calcolato per quel giorno/prodotto.")
 
     destinatari = (
         client.table("destinatari_vendita")
@@ -146,13 +177,13 @@ if prodotti_multi:
     )
 
     if not destinatari:
-        st.info("Nessun destinatario di vendita attivo. Aggiungine uno nella pagina Conferitori, sezione 'A chi vendo/cedo il latte' (i destinatari vengono riusati anche qui per i prodotti finiti).")
+        st.info("Nessun destinatario di vendita attivo. Aggiungine uno nella pagina Conferitori, sezione 'A chi vendo/cedo il latte'.")
     else:
-        prodotto_scelto_nome = st.selectbox("Prodotto", [p["nome"] for p in prodotti_multi], key="prod_multi_scelto")
-        prodotto_scelto = next(p for p in prodotti_multi if p["nome"] == prodotto_scelto_nome)
-        data_scelta = st.date_input("Data", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine, key="data_multi_scelta")
+        prodotto_scelto_nome2 = st.selectbox("Prodotto", [p["nome"] for p in prodotti_multi], key="prod_multi_scelto")
+        prodotto_scelto2 = next(p for p in prodotti_multi if p["nome"] == prodotto_scelto_nome2)
+        data_scelta2 = st.date_input("Data", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine, key="data_multi_scelta")
 
-        produzione_giorno = mappa_esistenti.get((prodotto_scelto["id"], str(data_scelta)))
+        produzione_giorno = mappa_esistenti.get((prodotto_scelto2["id"], str(data_scelta2)))
         if not produzione_giorno:
             st.warning("Nessuna produzione salvata per questo prodotto in questa data. Salva prima la griglia sopra.")
         else:
@@ -170,7 +201,7 @@ if prodotti_multi:
                     "KG": r["kg"],
                 } for r in righe_terzi])
                 tot_assegnato = sum(float(r["kg"]) for r in righe_terzi)
-                st.caption(f"Totale già assegnato: {tot_assegnato} kg su {produzione_giorno.get('kg_terzi') or 0} kg Terzi inseriti nella griglia.")
+                st.caption(f"Totale già assegnato: {tot_assegnato} kg su {produzione_giorno.get('kg_terzi') or 0} kg Terzi.")
 
             with st.form("nuovo_terzo"):
                 dest_nome = st.selectbox("Destinatario", [d["ragione_sociale"] for d in destinatari])
