@@ -59,28 +59,6 @@ if is_owner():
                     "caseificio_id": caseificio_id,
                     "nome": nome,
                     "is_dop": is_dop,
-                client.table("prodotti").insert({
-                    "caseificio_id": caseificio_id,
-                    "nome": nome,
-                    "is_dop": is_dop,
-                client.table("prodotti").insert({
-                    "caseificio_id": caseificio_id,
-                    "nome": nome,
-                    "is_dop": is_dop,
-                    "attivo": True,
-                    "tipo_lotto": tipo_lotto,
-                    "giorni_scadenza": int(giorni_scadenza),
-                    "resa_automatica_percent": resa,
-                    "mostra_in_produzioni": mostra_produzioni,
-                    "consente_piu_terzi": consente_piu_terzi,
-                }).execute()
-                    "attivo": True,
-                    "tipo_lotto": tipo_lotto,
-                    "giorni_scadenza": int(giorni_scadenza),
-                    "resa_automatica_percent": resa,
-                    "mostra_in_produzioni": mostra_produzioni,
-                    "consente_piu_terzi": consente_piu_terzi,
-                }).execute()
                     "tipo_lotto": tipo_lotto,
                     "giorni_scadenza": int(giorni_scadenza),
                     "resa_automatica_percent": resa,
