@@ -74,23 +74,27 @@ mappa_esistenti = {(e["prodotto_id"], e["data"]): e for e in esistenti}
 st.subheader("Griglia produzioni")
 st.caption("Per ogni prodotto: KG Totale, KG Diretta, KG Terzi. Ricorda di premere 'Salva produzioni' in fondo.")
 
+def etichetta_prodotto(p):
+    return f"{p['nome']} (DOP)" if p["is_dop"] else p["nome"]
+
 righe = []
 for d in date_periodo:
     riga = {"Data": d.strftime("%d/%m/%Y")}
     for p in prodotti:
         rec = mappa_esistenti.get((p["id"], str(d)))
-        riga[f"{p['nome']} - Totale"] = float(rec["kg_totale"]) if rec and rec.get("kg_totale") is not None else 0.0
-        riga[f"{p['nome']} - Diretta"] = float(rec["kg_diretta"]) if rec and rec.get("kg_diretta") is not None else 0.0
-        riga[f"{p['nome']} - Terzi"] = float(rec["kg_terzi"]) if rec and rec.get("kg_terzi") is not None else 0.0
+        riga[f"p{p['id']} - Totale"] = float(rec["kg_totale"]) if rec and rec.get("kg_totale") is not None else 0.0
+        riga[f"p{p['id']} - Diretta"] = float(rec["kg_diretta"]) if rec and rec.get("kg_diretta") is not None else 0.0
+        riga[f"p{p['id']} - Terzi"] = float(rec["kg_terzi"]) if rec and rec.get("kg_terzi") is not None else 0.0
     righe.append(riga)
 
 df = pd.DataFrame(righe)
 
 column_config = {"Data": st.column_config.TextColumn("Data", disabled=True)}
 for p in prodotti:
-    column_config[f"{p['nome']} - Totale"] = st.column_config.NumberColumn(f"{p['nome']}\nTotale KG", min_value=0.0, step=1.0)
-    column_config[f"{p['nome']} - Diretta"] = st.column_config.NumberColumn(f"{p['nome']}\nDiretta KG", min_value=0.0, step=1.0)
-    column_config[f"{p['nome']} - Terzi"] = st.column_config.NumberColumn(f"{p['nome']}\nTerzi KG", min_value=0.0, step=1.0)
+    etichetta = etichetta_prodotto(p)
+    column_config[f"p{p['id']} - Totale"] = st.column_config.NumberColumn(f"{etichetta}\nTotale KG", min_value=0.0, step=1.0)
+    column_config[f"p{p['id']} - Diretta"] = st.column_config.NumberColumn(f"{etichetta}\nDiretta KG", min_value=0.0, step=1.0)
+    column_config[f"p{p['id']} - Terzi"] = st.column_config.NumberColumn(f"{etichetta}\nTerzi KG", min_value=0.0, step=1.0)
 
 df_modificato = st.data_editor(
     df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_produzioni"
@@ -101,9 +105,9 @@ if is_owner():
         records = []
         for i, d in enumerate(date_periodo):
             for p in prodotti:
-                tot = df_modificato.loc[i, f"{p['nome']} - Totale"]
-                dir_ = df_modificato.loc[i, f"{p['nome']} - Diretta"]
-                terzi = df_modificato.loc[i, f"{p['nome']} - Terzi"]
+                tot = df_modificato.loc[i, f"p{p['id']} - Totale"]
+                dir_ = df_modificato.loc[i, f"p{p['id']} - Diretta"]
+                terzi = df_modificato.loc[i, f"p{p['id']} - Terzi"]
                 if (tot and float(tot) > 0) or (dir_ and float(dir_) > 0) or (terzi and float(terzi) > 0):
                     records.append({
                         "caseificio_id": caseificio_id,
