@@ -59,6 +59,7 @@ if is_owner():
                     "caseificio_id": caseificio_id,
                     "nome": nome,
                     "is_dop": is_dop,
+                    "attivo": True,
                     "tipo_lotto": tipo_lotto,
                     "giorni_scadenza": int(giorni_scadenza),
                     "resa_automatica_percent": resa,
