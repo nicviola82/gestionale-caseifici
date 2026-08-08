@@ -29,7 +29,7 @@ if not caseificio_id or not periodo_inizio:
 st.caption(f"Periodo: {st.session_state.get('periodo_label')}")
 
 TIPI_LATTE_LABEL = {
-    "bufala_dop": "Bufala DOP", "bufala": "Bufala", "vaccino": "Vaccino",
+    "bufala_dop": "Bufala DOP", "bufala": "Bufala", "vaccino": "Vaccino", "semilavorato": "Semilavorato",
     "cagliata_bufala": "Cagliata bufala", "cagliata_vaccino": "Cagliata vaccino",
     "bufala_congelato": "Bufala congelato", "vaccino_congelato": "Vaccino congelato", "altro": "Altro",
 }
