@@ -53,6 +53,7 @@ if is_owner():
                 resa = st.number_input("Resa automatica (% del latte lavorato)", min_value=0.0, max_value=100.0, value=3.5)
             mostra_produzioni = st.checkbox("Mostra questo prodotto nello schema Produzioni", value=True)
             consente_piu_terzi = st.checkbox("Consenti piu' destinatari per la vendita a terzi (es. mozzarella)")
+            stabilisce_resa = st.checkbox("Questo prodotto STABILISCE LA RESA del giorno per la sua categoria di latte (es. la Mozzarella di Bufala Campana DOP)")
 
             if st.form_submit_button("Salva prodotto"):
                 client.table("prodotti").insert({
@@ -65,6 +66,7 @@ if is_owner():
                     "resa_automatica_percent": resa,
                     "mostra_in_produzioni": mostra_produzioni,
                     "consente_piu_terzi": consente_piu_terzi,
+                    "stabilisce_resa": stabilisce_resa,
                 }).execute()
                 st.success("Prodotto salvato.")
                 st.rerun()
@@ -131,6 +133,9 @@ else:
                         m_consente_piu_terzi = st.checkbox(
                             "Consenti piu' destinatari per la vendita a terzi", value=p.get("consente_piu_terzi", False), key=f"m_multi_{p['id']}",
                         )
+                        m_stabilisce_resa = st.checkbox(
+                            "Questo prodotto STABILISCE LA RESA del giorno", value=p.get("stabilisce_resa", False), key=f"m_resa_flag_{p['id']}",
+                        )
                         if st.form_submit_button("Salva modifiche"):
                             client.table("prodotti").update({
                                 "nome": m_nome,
@@ -140,6 +145,7 @@ else:
                                 "resa_automatica_percent": m_resa if m_resa > 0 else None,
                                 "mostra_in_produzioni": m_mostra_produzioni,
                                 "consente_piu_terzi": m_consente_piu_terzi,
+                                "stabilisce_resa": m_stabilisce_resa,
                             }).eq("id", p["id"]).execute()
                             st.success("Prodotto aggiornato.")
                             st.rerun()
