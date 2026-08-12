@@ -196,7 +196,7 @@ for p in prodotti_mista_vaccina:
     column_config[f"p_{p['id']}_lattevacc"] = st.column_config.NumberColumn(f"{etichetta_prodotto(p)} LatteVaccino", min_value=0.0, step=1.0)
     column_config[f"p_{p['id']}_lattebuf"] = st.column_config.NumberColumn(f"{etichetta_prodotto(p)} LatteBufala", min_value=0.0, step=1.0)
 
-df_mod = st.data_editor(df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_registro")
+df_mod = st.data_editor(df, column_config=column_config, hide_index=True, width='stretch', key="griglia_registro")
 
 if is_owner():
     if st.button("💾 Salva registro"):
@@ -400,9 +400,9 @@ for d in date_periodo:
             kg_dop_prod = float(rec["kg_totale"]) - kg_nondop
             r = resa_dop(ds)
             latte_dop_calc = (kg_dop_prod / r) if r and r > 0 else None
-            riga[f"{p['nome']} LatteDOP calc."] = round(latte_dop_calc, 1) if latte_dop_calc is not None else "-"
+            riga[f"{p['nome']} LatteDOP calc."] = f"{latte_dop_calc:.1f}" if latte_dop_calc is not None else "-"
     riepilogo.append(riga)
-st.dataframe(riepilogo, use_container_width=True, hide_index=True)
+st.dataframe(riepilogo, width='stretch', hide_index=True)
 
 st.divider()
 
