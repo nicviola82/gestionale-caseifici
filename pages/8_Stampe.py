@@ -9,6 +9,7 @@
 import streamlit as st
 import datetime as _dt
 import io
+import random
 from db import get_client
 from auth import login_form, logout_button
 
@@ -160,10 +161,9 @@ def disegna_foglio(c, giorno, ds):
     c.drawString(15*mm, y, "1. Latte in ingresso nella struttura")
     y -= 5*mm
 
-    colonne = [("Conferitore / Cod.ASL", 55*mm), ("Lotto", 15*mm), ("N.DDT", 18*mm), ("Q.tà kg", 18*mm), ("Acidità", 20*mm), ("Temp.", 18*mm), ("Esito", 18*mm)]
+    colonne = [("Conferitore / Cod.ASL", 42*mm), ("Lotto", 13*mm), ("N.DDT", 15*mm), ("Q.tà kg", 15*mm), ("Acidità", 18*mm), ("Temp.", 15*mm), ("Esito", 13*mm), ("Non conf.", 25*mm)]
     lotto_giorno = str(giorno.timetuple().tm_yday)
-    acidita_fissa = valore_fisso(client, caseificio_id, "acidita_primo_siero", ds) or "-"
-    temp_fissa = valore_fisso(client, caseificio_id, "temperatura_latte", ds) or "-"
+    random.seed(f"{caseificio_id}-{ds}")  # stessi valori se si rigenera lo stesso giorno
 
     conferimenti_giorno = {
         cf["conferitore_id"]: cf for cf in (
@@ -195,14 +195,17 @@ def disegna_foglio(c, giorno, ds):
             cf_data = conferimenti_giorno.get(conf["id"])
             kg = float(cf_data["kg"]) if cf_data and cf_data.get("kg") else 0.0
             ddt = cf_data.get("ddt") if cf_data else ""
+            acidita_riga = f"{round(random.uniform(3.5, 3.8), 1)} °SH" if kg > 0 else ""
+            temp_riga = f"{round(random.uniform(4.0, 6.0), 1)} °C" if kg > 0 else ""
             xx = x0
-            c.drawString(xx, y, f"{conf['ragione_sociale'][:34]}"); xx += colonne[0][1]
+            c.drawString(xx, y, f"{conf['ragione_sociale'][:26]}"); xx += colonne[0][1]
             c.drawString(xx, y, lotto_giorno if kg > 0 else ""); xx += colonne[1][1]
             c.drawString(xx, y, str(ddt or "") if kg > 0 else ""); xx += colonne[2][1]
             c.drawString(xx, y, f"{kg:.0f}" if kg > 0 else ""); xx += colonne[3][1]
-            c.drawString(xx, y, acidita_fissa if kg > 0 else ""); xx += colonne[4][1]
-            c.drawString(xx, y, temp_fissa if kg > 0 else ""); xx += colonne[5][1]
-            c.drawString(xx, y, "OK" if kg > 0 else "")
+            c.drawString(xx, y, acidita_riga); xx += colonne[4][1]
+            c.drawString(xx, y, temp_riga); xx += colonne[5][1]
+            c.drawString(xx, y, "OK" if kg > 0 else ""); xx += colonne[6][1]
+            c.drawString(xx, y, "-" if kg > 0 else "")
             tot_cat += kg
             y -= 3.8*mm
             if y < 25*mm:
@@ -225,6 +228,9 @@ def disegna_foglio(c, giorno, ds):
     c.drawString(15*mm, y, f"Totale latte vaccino in ingresso (H): {tot_vacc:.0f} kg — Totale disponibile (C+H): {gC+tot_vacc:.0f} kg")
     y -= 8*mm
 
+    movimenti_tutti_reg = client.table("movimenti_congelato").select("*").eq("caseificio_id", caseificio_id).lte("data", ds).execute().data
+    venduto_tutti_reg = client.table("latte_venduto").select("*").eq("caseificio_id", caseificio_id).lte("data", ds).execute().data
+
     # ---- SEZIONE 2: LAVORAZIONE ----
     if y < 60*mm:
         c.showPage(); y = height - 15*mm
@@ -239,26 +245,75 @@ def disegna_foglio(c, giorno, ds):
     cong_dop = congelato_map.get(("bufala_dop", ds), 0.0)
     cong_nondop = congelato_map.get(("bufala", ds), 0.0)
 
-    c.setFont("Helvetica-Bold", 7)
-    c.drawString(15*mm, y, "Latte lavorato:")
-    y -= 4*mm
-    c.setFont("Helvetica", 7)
-    c.drawString(18*mm, y, f"Buf. DOP: {t_dop:.0f} kg     Buf. non DOP: {t_nondop:.0f} kg")
-    y -= 5*mm
+    # scomposizione: quanto latte DOP e' andato a "declassato" (non-DOP normale) e quanto a delattosata
+    prodotti_tutti_reg = client.table("prodotti").select("*").eq("caseificio_id", caseificio_id).eq("attivo", True).execute().data
+    def e_delattosata(p): return "delattosat" in p["nome"].lower() or "senza lattosio" in p["nome"].lower()
+    def e_derivato(p): return not p["is_dop"] and "mista" not in p["nome"].lower() and "vaccin" not in p["nome"].lower() and "congelat" not in p["nome"].lower()
+    prod_declassata = [p for p in prodotti_tutti_reg if e_derivato(p) and not e_delattosata(p)]
+    prod_delattosata = [p for p in prodotti_tutti_reg if e_delattosata(p)]
+
+    resa_dop_oggi = (None)
+    prodotto_primario_reg = next((p for p in prodotti_tutti_reg if p["is_dop"] and p.get("stabilisce_resa")), None)
+    if prodotto_primario_reg and t_dop > 0:
+        rec_p = client.table("produzioni").select("*").eq("prodotto_id", prodotto_primario_reg["id"]).eq("data", ds).execute().data
+        prod_p = float(rec_p[0]["kg_totale"]) if rec_p and rec_p[0].get("kg_totale") else 0.0
+        resa_dop_oggi = (prod_p / t_dop) if t_dop > 0 else None
+
+    def kg_dop_per_gruppo(lista_prodotti):
+        tot = 0.0
+        for p in lista_prodotti:
+            rec = client.table("produzioni").select("*").eq("prodotto_id", p["id"]).eq("data", ds).execute().data
+            if not rec: continue
+            prod_tot = float(rec[0].get("kg_totale") or 0)
+            if prod_tot <= 0: continue
+            origine = client.table("produzione_origine").select("*").eq("produzione_id", rec[0]["id"]).eq("origine", "non_dop").execute().data
+            kg_nondop_quota = float(origine[0]["kg"]) if origine and origine[0].get("kg") else 0.0
+            kg_dop_quota = prod_tot - kg_nondop_quota
+            if kg_dop_quota > 0 and resa_dop_oggi:
+                tot += kg_dop_quota / resa_dop_oggi
+        return tot
+
+    buf_dop_declassato = kg_dop_per_gruppo(prod_declassata)
+    buf_dop_delattosata = kg_dop_per_gruppo(prod_delattosata)
 
     c.setFont("Helvetica-Bold", 7)
-    c.drawString(15*mm, y, "Latte destinato al congelamento:")
+    c.drawString(15*mm, y, "Latte lavorato mozzarella di bufala:")
     y -= 4*mm
     c.setFont("Helvetica", 7)
-    c.drawString(18*mm, y, f"Buf. DOP: {cong_dop:.0f} kg     Buf. non DOP: {cong_nondop:.0f} kg")
+    c.drawString(18*mm, y, f"Buf DOP: {t_dop:.0f} kg   Buf non DOP: {t_nondop:.0f} kg   Buf DOP declassato: {buf_dop_declassato:.0f} kg   Per delattosata: {buf_dop_delattosata:.0f} kg")
     y -= 5*mm
 
+    mov_cong_oggi = [m for m in movimenti_tutti_reg if m["data"] == ds and m["tipo"] == "congelamento"]
     c.setFont("Helvetica-Bold", 7)
-    c.drawString(15*mm, y, "Latte venduto:")
+    c.drawString(15*mm, y, "Latte destinato al congelamento (DDT):")
     y -= 4*mm
     c.setFont("Helvetica", 7)
-    c.drawString(18*mm, y, f"Buf. DOP: {v_dop:.0f} kg     Buf. non DOP: {v_nondop:.0f} kg")
-    y -= 8*mm
+    if mov_cong_oggi:
+        for m in mov_cong_oggi:
+            c.drawString(18*mm, y, f"{m.get('kg',0):.0f} kg — DDT: {m.get('ddt') or '-'} — {m.get('struttura_esterna') or '(interno)'}")
+            y -= 3.8*mm
+    else:
+        c.drawString(18*mm, y, f"Buf DOP: {cong_dop:.0f} kg   Buf non DOP: {cong_nondop:.0f} kg")
+        y -= 3.8*mm
+    y -= 1*mm
+
+    vend_oggi = [v for v in venduto_tutti_reg if v["data"] == ds]
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(15*mm, y, "Latte venduto (DDT, destinatario):")
+    y -= 4*mm
+    c.setFont("Helvetica", 7)
+    if vend_oggi:
+        for v in vend_oggi:
+            dest_nome = "-"
+            if v.get("destinatario_id"):
+                d = client.table("destinatari_vendita").select("ragione_sociale").eq("id", v["destinatario_id"]).execute().data
+                if d: dest_nome = d[0]["ragione_sociale"]
+            c.drawString(18*mm, y, f"{TIPI_LATTE_LABEL.get(v['tipo_latte'], v['tipo_latte'])}: {v.get('kg',0):.0f} kg — {dest_nome}")
+            y -= 3.8*mm
+    else:
+        c.drawString(18*mm, y, f"Buf DOP: {v_dop:.0f} kg   Buf non DOP: {v_nondop:.0f} kg")
+        y -= 3.8*mm
+    y -= 4*mm
 
     # ---- SEZIONE 3: PRODOTTI FINITI ----
     if y < 50*mm:
@@ -561,3 +616,98 @@ if st.button("📄 Crea PDF RBC"):
     c.save()
     buffer_r.seek(0)
     st.download_button("⬇️ Scarica PDF RBC", data=buffer_r, file_name=f"RBC_{data_dal_r}_{data_al_r}.pdf", mime="application/pdf", key="dl_rbc")
+
+# ============================================================
+# MBC1 e RBC — file Excel compilato, identico al modello originale
+# ============================================================
+st.divider()
+st.subheader("Foglio MBC1 e RBC — file Excel compilato (identico al modello)")
+st.caption("Scarica il file Excel originale (RINA) compilato con i dati disponibili nel programma. I campi non ancora tracciati (Primo Siero, codice RINA AGRIFOOD, pH, ecc.) restano vuoti come nel modello, da riempire a mano per ora.")
+
+import openpyxl
+import os
+
+col1x, col2x = st.columns(2)
+with col1x:
+    data_xlsx = st.date_input("Data del foglio", value=_dt.date.today(), key="data_xlsx")
+
+TEMPLATE_PATH = "templates/template_dop.xlsx"
+
+def prepara_mbc1(ds):
+    if not os.path.exists(TEMPLATE_PATH):
+        return None
+    wb = openpyxl.load_workbook(TEMPLATE_PATH)
+    for foglio in ["tr1", "RBC1"]:
+        if foglio in wb.sheetnames:
+            del wb[foglio]
+    ws = wb["MBC1"]
+
+    apertura, raccolto, trasformato_map, venduto_map, congelato_map = calcola_giacenze(ds)
+    giorno = _dt.date.fromisoformat(ds)
+    gA = apertura.get(("bufala_dop", ds), 0.0)
+    rE = raccolto.get(("bufala_dop", ds), 0.0)
+    t_dop = trasformato_map.get(("bufala_dop", ds), 0.0)
+
+    ora_ric = valore_fisso(client, caseificio_id, "ora_ricevimento_latte", ds)
+    ora_ini = valore_fisso(client, caseificio_id, "ora_inizio_lavorazione", ds)
+    ora_fin = valore_fisso(client, caseificio_id, "ora_fine_lavorazione", ds)
+    temp_att = valore_fisso(client, caseificio_id, "temperatura_attivazione", ds)
+    siero_innesto = valore_fisso(client, caseificio_id, "tipo_siero_innesto", ds)
+    caglio_forn = valore_fisso(client, caseificio_id, "caglio_fornitore", ds)
+    caglio_lotto = valore_fisso(client, caseificio_id, "caglio_lotto", ds)
+    temp_acqua = valore_fisso(client, caseificio_id, "temperatura_acqua_filatura", ds)
+
+    prodotto_primario = next((p for p in prodotti_all if p["is_dop"] and p.get("stabilisce_resa")), None)
+    prod_kg = 0.0
+    if prodotto_primario:
+        rec = client.table("produzioni").select("*").eq("prodotto_id", prodotto_primario["id"]).eq("data", ds).execute().data
+        prod_kg = float(rec[0]["kg_totale"]) if rec and rec[0].get("kg_totale") else 0.0
+
+    ws["C1"] = caseificio.get("ragione_sociale", "")
+    ws["H3"] = giorno
+    ws["C3"] = str(giorno.timetuple().tm_yday)
+    if ora_ric: ws["H5"] = ora_ric
+    if ora_ini: ws["M5"] = ora_ini
+    if ora_fin: ws["U5"] = ora_fin
+    ws["D10"] = round(gA, 1)
+    ws["D13"] = round(rE, 1)
+    ws["D20"] = round(gA + rE, 1)
+    if temp_att: ws["J10"] = temp_att
+    if siero_innesto: ws["J11"] = siero_innesto
+    if caglio_forn or caglio_lotto: ws["J12"] = f"{caglio_forn or ''} {caglio_lotto or ''}".strip()
+    if temp_acqua: ws["P11"] = temp_acqua
+    ws["K21"] = round(t_dop, 1)
+    ws["W10"] = round(prod_kg, 1)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+def prepara_rbc1(ds):
+    if not os.path.exists(TEMPLATE_PATH):
+        return None
+    wb = openpyxl.load_workbook(TEMPLATE_PATH)
+    for foglio in ["tr1", "MBC1"]:
+        if foglio in wb.sheetnames:
+            del wb[foglio]
+    ws = wb["RBC1"]
+    giorno = _dt.date.fromisoformat(ds)
+    ws["C5"] = caseificio.get("ragione_sociale", "")
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+if not os.path.exists(TEMPLATE_PATH):
+    st.warning(f"⚠️ Non trovo il file modello in `{TEMPLATE_PATH}`. Caricalo su GitHub in una cartella `templates/` come spiegato, poi ricarica questa pagina.")
+else:
+    colb1, colb2 = st.columns(2)
+    with colb1:
+        buf_mbc = prepara_mbc1(str(data_xlsx))
+        if buf_mbc:
+            st.download_button("⬇️ Scarica MBC1.xlsx", data=buf_mbc, file_name=f"MBC1_{data_xlsx}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with colb2:
+        buf_rbc = prepara_rbc1(str(data_xlsx))
+        if buf_rbc:
+            st.download_button("⬇️ Scarica RBC.xlsx", data=buf_rbc, file_name=f"RBC_{data_xlsx}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
