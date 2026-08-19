@@ -1,0 +1,100 @@
+# ============================================================
+# MODULO: STAMPA RBC
+# Compila il foglio "RBC" del template ufficiale RINA
+# (templates_dop.xlsx) per una singola giornata di lavorazione.
+#
+# IMPORTANTE: il foglio RBC e' un documento ufficiale statico,
+# come MBC - la struttura del file non viene mai modificata.
+#
+# NOTA: Scheda N. (Q5) e Data (U5) sul foglio RBC sono gia'
+# collegate con formula al foglio MBC dello stesso workbook
+# (=MBC!C3 e =MBC!H3) - non serve scriverle qui, basta che
+# genera_mbc() sia stata eseguita sullo stesso file prima
+# (o nello stesso momento) di genera_rbc().
+# ============================================================
+import shutil
+import openpyxl
+
+from stampa_mbc import get_anagrafica, get_impostazione, get_produzione_giorno, numero_scheda
+
+FOGLIO = "RBC"
+
+
+# ------------------------------------------------------------
+# BLOCCO: DATI DAL FOGLIO SIERO (non ancora costruito nel
+# gestionale). Placeholder isolati, da ricollegare quando la
+# fase Siero sara' pronta - stesso principio delle funzioni
+# TODO in stampa_mbc.py.
+# ------------------------------------------------------------
+def get_siero_acquistato(client, caseificio_id, data_giorno):
+    """Ritorna al massimo 1 riga (confermato: max un acquisto di siero da altro caseificio a giornata)."""
+    # TODO: collegare al foglio Siero quando pronto
+    return None  # es. futuro: {"origine": ..., "ddt": ..., "kg": ..., "ora_rottura": ..., "tank": ...}
+
+
+def get_siero_autoprodotto(client, caseificio_id, data_giorno):
+    """Ritorna fino a 2 cicli (confermato: max 2 cicli di lavorazione al giorno)."""
+    # TODO: collegare al foglio Siero quando pronto
+    return []  # es. futuro: [{"origine": ..., "kg": ..., "ora_rottura": ..., "tank": ...}, ...]
+
+
+def get_siero_kg_totale_lavorato(client, caseificio_id, data_giorno):
+    # TODO: collegare al foglio Siero quando pronto
+    return 0.0
+
+
+# ------------------------------------------------------------
+# BLOCCO: COMPILAZIONE FOGLIO RBC
+# Va chiamata sullo STESSO file .xlsx su cui e' gia' stata
+# chiamata genera_mbc() per lo stesso giorno.
+# ------------------------------------------------------------
+def genera_rbc(client, caseificio_id, data_giorno, output_path):
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb[FOGLIO]
+
+    anagrafica = get_anagrafica(client, caseificio_id)
+
+    # --- Intestazione ---
+    ws["C5"] = anagrafica.get("ragione_sociale", "")
+    # ws["L5"] = codice RINA AGRIFOOD -> non ancora presente in Anagrafica, lasciato vuoto
+    # Q5 (Scheda N.) e U5 (Data) restano le formule originali =MBC!C3 / =MBC!H3, non toccarle
+
+    # --- Primo Siero Acquistato (max 1 riga, come confermato) ---
+    acquistato = get_siero_acquistato(client, caseificio_id, data_giorno)
+    if acquistato:
+        ws["C11"] = acquistato.get("origine", "")
+        ws["H11"] = acquistato.get("ddt", "")
+        ws["K11"] = acquistato.get("kg", 0)
+        ws["N11"] = acquistato.get("ora_rottura", "")
+        ws["Q11"] = acquistato.get("tank", "")
+
+    # --- Primo Siero Autoprodotto (max 2 cicli, come confermato) ---
+    autoprodotto = get_siero_autoprodotto(client, caseificio_id, data_giorno)
+    riga_base = 25
+    for i, ciclo in enumerate(autoprodotto[:2]):
+        r = riga_base + i
+        ws[f"C{r}"] = ciclo.get("origine", "")
+        ws[f"K{r}"] = ciclo.get("kg", 0)
+        ws[f"N{r}"] = ciclo.get("ora_rottura", "")
+        ws[f"Q{r}"] = ciclo.get("tank", "")
+
+    # --- Lavorazione ---
+    ws["H41"] = get_siero_kg_totale_lavorato(client, caseificio_id, data_giorno)  # TODO Siero
+    ws["N41"] = 1  # default automatico confermato, modificabile a mano prima della stampa
+
+    # K45 (acidita' primo siero) e K51 (sale) restano le formule originali del template - non toccarle
+
+    ws["F53"] = get_impostazione(client, caseificio_id, "acidita_primo_siero", data_giorno)
+    ws["F59"] = get_impostazione(client, caseificio_id, "temperatura_latte", data_giorno)
+
+    # --- Caratteristiche prodotto finito: default "Idoneo" come nel template originale ---
+    for cella in ["F68", "F69", "F70"]:
+        ws[cella] = "Idoneo"
+
+    # --- Confezionamento (Ricotta di Bufala DOP prodotta) ---
+    kg_ricotta = get_produzione_giorno(client, caseificio_id, data_giorno, "Ricotta di Bufala DOP")
+    ws["F78"] = kg_ricotta
+    ws["Q78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
+
+    wb.save(output_path)
+    return output_path
