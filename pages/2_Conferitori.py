@@ -21,7 +21,7 @@ if not caseificio_id:
     st.info("Seleziona un caseificio dalla pagina principale.")
     st.stop()
 
-TIPI_LATTE = ["bufala_dop", "bufala", "vaccino", "semilavorato", "cagliata_bufala",
+TIPI_LATTE = ["bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino", "cagliata_bufala",
               "cagliata_vaccino", "bufala_congelato", "vaccino_congelato", "altro"]
 
 # ------------------------------------------------------------
