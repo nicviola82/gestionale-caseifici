@@ -36,6 +36,7 @@ CAMPI = {
     "temperatura_acqua_filatura": "Temperatura acqua di filatura (°C)",
     "caglio_fornitore": "Caglio - fornitore",
     "caglio_lotto": "Caglio - lotto",
+    "cicli_lavorazione": "Cicli di lavorazione n°",
 }
 
 def valore_attuale(campo, alla_data=None):
