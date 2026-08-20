@@ -8,6 +8,8 @@ import datetime as _dt
 from db import get_client
 from auth import login_form, logout_button
 from stampa_mbc import genera_mbc
+from stampa_rbc import genera_rbc
+from stampa_tr import genera_tr
 
 st.set_page_config(page_title="Fogli Stampabili", layout="wide")
 if not login_form():
@@ -28,28 +30,41 @@ data_giorno = st.date_input("Giorno da stampare", value=_dt.date.today())
 st.divider()
 
 # ------------------------------------------------------------
-# BLOCCO: GENERAZIONE MBC
+# BLOCCO: GENERAZIONE MBC + RBC
+# RBC va compilato sullo stesso file di MBC: sul foglio RBC,
+# Scheda N. e Data sono formule che puntano a MBC dello stesso
+# workbook (=MBC!C3 / =MBC!H3), quindi le due generazioni non
+# possono essere separate in due file diversi.
 # ------------------------------------------------------------
-st.subheader("MBC - Registro Mozzarella")
-if st.button("📄 Genera MBC"):
-    output_path = f"MBC_{data_giorno.strftime('%Y%m%d')}.xlsx"
+st.subheader("MBC + RBC - Registri Mozzarella e Ricotta")
+if st.button("📄 Genera MBC + RBC del giorno"):
+    output_path = f"Scheda_{data_giorno.strftime('%Y%m%d')}.xlsx"
     genera_mbc(client, caseificio_id, data_giorno, output_path)
+    genera_rbc(client, caseificio_id, data_giorno, output_path)
     with open(output_path, "rb") as f:
         st.download_button(
-            "⬇️ Scarica MBC compilato",
+            "⬇️ Scarica scheda compilata (MBC + RBC)",
             data=f.read(),
             file_name=output_path,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    st.success("MBC generato.")
+    st.success("MBC e RBC generati.")
 
 st.divider()
 
 # ------------------------------------------------------------
-# BLOCCO: RBC E TR (in arrivo)
+# BLOCCO: TR (righe dinamiche in base ai conferitori attivi)
 # ------------------------------------------------------------
-st.subheader("RBC - Registro Ricotta")
-st.info("In lavorazione - non ancora disponibile.")
-
 st.subheader("tr - Tabellone giornaliero")
-st.info("In lavorazione - non ancora disponibile.")
+st.caption("Le righe dei conferitori vengono generate solo per chi ha effettivamente conferito quel giorno.")
+if st.button("📄 Genera tr del giorno"):
+    output_path_tr = f"tr_{data_giorno.strftime('%Y%m%d')}.xlsx"
+    genera_tr(client, caseificio_id, data_giorno, output_path_tr)
+    with open(output_path_tr, "rb") as f:
+        st.download_button(
+            "⬇️ Scarica tr compilato",
+            data=f.read(),
+            file_name=output_path_tr,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    st.success("tr generato.")
