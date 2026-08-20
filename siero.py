@@ -22,18 +22,17 @@ import datetime as _dt
 
 
 # ------------------------------------------------------------
-# BLOCCO: DATI DAL REGISTRO (TODO - da ricollegare quando il
-# Registro sara' riscritto)
+# BLOCCO: DATI DAL REGISTRO (ora collegati a registro_calc.py)
 # ------------------------------------------------------------
+import registro_calc
+
+
 def get_trasformato_dop_giorno(client, caseificio_id, data_giorno):
-    # TODO: collegare al Registro reale (campo "Trasformato" - bufala_dop)
-    return 0.0
+    return registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
 
 
 def get_trasformato_totale_giorno(client, caseificio_id, data_giorno):
-    # TODO: collegare al Registro reale, somma di TUTTI i tipi di latte trasformati
-    # (bufala_dop + bufala + vaccino + semilavorato_bufala + semilavorato_vaccino)
-    return 0.0
+    return registro_calc.trasformato_totale(client, caseificio_id, data_giorno)
 
 
 # ------------------------------------------------------------
