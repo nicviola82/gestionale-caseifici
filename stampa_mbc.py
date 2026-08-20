@@ -12,6 +12,8 @@ import datetime as _dt
 import shutil
 import openpyxl
 
+import registro_calc
+
 TEMPLATE_PATH = "templates_dop.xlsx"  # percorso del file originale scaricato da GitHub
 FOGLIO = "MBC"
 
@@ -111,22 +113,21 @@ def get_produzione_giorno(client, caseificio_id, data_giorno, contiene_nel_nome)
     return totale
 
 
-# TODO: da ricollegare quando il Registro verra' riscritto (foglio Excel dinamico).
-# Per ora ritorna 0 / vuoto: le celle restano compilabili a mano finche' non e' pronto.
+# Ricollegate al vero Registro (registro_calc.py) - stessa logica usata dalla pagina Registro.
 def get_registro_giacenza_apertura(client, caseificio_id, data_giorno):
-    return 0.0
+    return registro_calc.giacenza_apertura(client, caseificio_id, "bufala_dop", data_giorno)
 
 
 def get_registro_trasformato_dop(client, caseificio_id, data_giorno):
-    return 0.0
+    return registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
 
 
 def get_registro_extra_dop(client, caseificio_id, data_giorno):
-    return 0.0
+    return registro_calc.extra_dop_consumato(client, caseificio_id, data_giorno)
 
 
 def get_registro_giacenza_chiusura(client, caseificio_id, data_giorno):
-    return 0.0
+    return registro_calc.giacenza_chiusura(client, caseificio_id, "bufala_dop", data_giorno)
 
 
 # ------------------------------------------------------------
