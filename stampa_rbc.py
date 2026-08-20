@@ -90,8 +90,15 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
 
     # K45 (acidita' primo siero) e K51 (sale) restano le formule originali del template - non toccarle
 
-    ws["F53"] = get_impostazione(client, caseificio_id, "acidita_primo_siero", data_giorno)
-    ws["F59"] = get_impostazione(client, caseificio_id, "temperatura_latte", data_giorno)
+    # NOTA: F53 NON e' l'acidita' (quella e' gia' calcolata automaticamente dalla formula
+    # originale in K45, corretta e da NON toccare) - F53 e' la quantita' kg dell'agente
+    # acidificante "Cizza di Mozzarella" (vedi H53). Rimosso lo scambio errato.
+    # F59/F61 (temperatura finale/raffreddamento ricotta) NON possono usare "temperatura_latte"
+    # di Impostazioni Fisse (quello e' per il latte crudo in cella frigo, tutt'altro range) -
+    # serve un campo dedicato non ancora presente in Impostazioni Fisse. Lasciati vuoti per ora.
+    # ws["F53"] = ...  # TODO: kg Cizza di Mozzarella (nuovo campo da costruire)
+    # ws["F59"] = ...  # TODO: nuovo campo "temperatura finale ricotta" in Impostazioni Fisse
+    # ws["F61"] = ...  # TODO: nuovo campo "temperatura raffreddamento ricotta" in Impostazioni Fisse
 
     # --- Caratteristiche prodotto finito: default "Idoneo" come nel template originale ---
     # NOTA: F68:H69 e F70:H71 sono celle unite nel template - si scrive solo nella cella
@@ -100,9 +107,13 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
         ws[cella] = "Idoneo"
 
     # --- Confezionamento (Ricotta di Bufala DOP prodotta) ---
+    # NOTA: intestazioni reali sono D76='Pezzatura', H76='Unita\' n\'', L76='ID. Lotto',
+    # P76='Data confezionamento', T76='Scadenza' - il lotto va in L78 (non P78, che e'
+    # la data di confezionamento), corretto qui.
     kg_ricotta = get_produzione_giorno(client, caseificio_id, data_giorno, "Ricotta di Bufala DOP")
-    ws["D78"] = kg_ricotta  # D78 e' l'anchor del merge D78:G79 (F78 e' dentro il merge, non scrivibile)
-    ws["P78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto - P78 anchor di P78:S79 (Q78 non scrivibile)
+    ws["D78"] = kg_ricotta
+    ws["L78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
+    ws["P78"] = data_giorno.strftime("%d/%m/%Y")  # data confezionamento
 
     wb.save(output_path)
     return output_path
