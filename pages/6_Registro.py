@@ -173,22 +173,6 @@ def resa_dop_giorno(ds):
     trasf = trasformato_map.get(("bufala_dop", ds), 0)
     return (prod / trasf) if trasf > 0 else None
 
-consumo_extra_dop = {}
-for p in prodotti_dop_altri + prodotti_declassati:
-    for d in date_periodo:
-        ds = str(d)
-        rec = prod_map.get((p["id"], ds))
-        if not rec: continue
-        tot = float(rec["kg_totale"] or 0)
-        if tot <= 0: continue
-        ov = origini_m.get(rec["id"], {}).get("non_dop")
-        kg_nondop = float(ov["kg"]) if ov and ov.get("kg") else 0.0
-        kg_dop = tot - kg_nondop
-        if kg_dop > 0:
-            r = resa_dop_giorno(ds)
-            if r and r > 0:
-                consumo_extra_dop[("bufala_dop", ds)] = consumo_extra_dop.get(("bufala_dop", ds), 0) + kg_dop / r
-
 # giacenza (apertura giorno = chiusura giorno precedente)
 tipi_giac = ["bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino"]
 tutte_le_date = sorted(set(
