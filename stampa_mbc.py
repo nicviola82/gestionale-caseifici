@@ -199,9 +199,15 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
         ws["M22"] = "X"
 
     # --- Sezione Produzioni ---
+    # NOTA: intestazioni reali sono R9='Prodotto' (testo), V9='lotto n.', W9='Q.tà (kg)' -
+    # la versione precedente scriveva la quantita' in R10 (che vuole il NOME prodotto) e il
+    # lotto in W10 (che vuole la quantita'): erano scambiate, corretto qui.
     kg_mozzarella = get_produzione_giorno(client, caseificio_id, data_giorno, "Mozzarella di Bufala Campana DOP")
-    ws["R10"] = kg_mozzarella
-    ws["W10"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
+    ws["R10"] = "Mozzarella di Bufala Campana DOP"
+    ws["V10"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
+    ws["W10"] = kg_mozzarella  # quantita' kg
+    ws["K26"] = ""  # TODO: "ceduto a terzi" - manca ancora una fonte dati (kg latte DOP ceduto quel giorno);
+                     # lasciato vuoto invece della formula #REF! originale, in attesa di costruire questa parte
 
     wb.save(output_path)
     return output_path
