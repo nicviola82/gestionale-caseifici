@@ -13,20 +13,20 @@
 #     smaltimento, un unico numero, poi ripartito manualmente
 #     dall'utente tra una o piu' aziende.
 #
-# NOTA: "latte trasformato" per tipo di latte dipende dal
-# Registro, che non e' ancora stato ricollegato (verra' rifatto
-# in seguito) - le funzioni get_trasformato_* sono placeholder
-# TODO, stesso schema usato in stampa_mbc.py.
+# IMPORTANTE SULLE PRESTAZIONI: la giacenza cumulativa NON cicla
+# giorno per giorno interrogando il database ad ogni iterazione
+# (avrebbe fatto migliaia di chiamate di rete e mandato in errore
+# Supabase/httpx) - fa UNA query in blocco per tutta la storia
+# disponibile, poi somma i risultati in memoria.
 # ============================================================
 import datetime as _dt
 
-
-# ------------------------------------------------------------
-# BLOCCO: DATI DAL REGISTRO (ora collegati a registro_calc.py)
-# ------------------------------------------------------------
 import registro_calc
 
 
+# ------------------------------------------------------------
+# BLOCCO: DATI DAL REGISTRO (per il "giorno" mostrato in pagina)
+# ------------------------------------------------------------
 def get_trasformato_dop_giorno(client, caseificio_id, data_giorno):
     return registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
 
@@ -36,7 +36,7 @@ def get_trasformato_totale_giorno(client, caseificio_id, data_giorno):
 
 
 # ------------------------------------------------------------
-# BLOCCO: DATI DA PRODUZIONI (gia' collegabili oggi)
+# BLOCCO: DATI DA PRODUZIONI - query singola (per il "giorno")
 # ------------------------------------------------------------
 def _kg_prodotto_giorno(client, prodotto_id, data_giorno):
     rec = (
@@ -51,8 +51,9 @@ def _kg_prodotto_giorno(client, prodotto_id, data_giorno):
 
 
 def _trova_prodotto(client, caseificio_id, nome_contiene, solo_dop=None):
-    q = client.table("prodotti").select("*").eq("caseificio_id", caseificio_id).eq("attivo", True)
-    prodotti = q.execute().data
+    prodotti = (
+        client.table("prodotti").select("*").eq("caseificio_id", caseificio_id).eq("attivo", True).execute().data
+    )
     match = [p for p in prodotti if nome_contiene.lower() in p["nome"].lower()]
     if solo_dop is not None:
         match = [p for p in match if p["is_dop"] == solo_dop]
@@ -60,7 +61,6 @@ def _trova_prodotto(client, caseificio_id, nome_contiene, solo_dop=None):
 
 
 def get_mozzarella_dop_giorno(client, caseificio_id, data_giorno):
-    """Kg di Mozzarella di Bufala Campana DOP prodotti quel giorno (prodotto 'principale')."""
     prodotto = _trova_prodotto(client, caseificio_id, "Mozzarella di Bufala Campana DOP", solo_dop=True)
     if not prodotto:
         return 0.0
@@ -68,7 +68,6 @@ def get_mozzarella_dop_giorno(client, caseificio_id, data_giorno):
 
 
 def get_ricotta_dop_giorno(client, caseificio_id, data_giorno):
-    """Kg di Ricotta di Bufala Campana DOP dichiarati quel giorno (sempre inseriti a mano)."""
     prodotto = _trova_prodotto(client, caseificio_id, "Ricotta di Bufala Campana DOP", solo_dop=True)
     if not prodotto:
         return 0.0, None
@@ -83,25 +82,21 @@ def get_resa_ricotta_dop(client, caseificio_id):
 
 
 # ------------------------------------------------------------
-# BLOCCO: SIERO PRODOTTO (mass balance reale)
+# BLOCCO: SIERO PRODOTTO NEL GIORNO SELEZIONATO (mass balance reale)
 # ------------------------------------------------------------
 def siero_dop_prodotto_giorno(client, caseificio_id, data_giorno):
-    trasformato_dop = get_trasformato_dop_giorno(client, caseificio_id, data_giorno)  # TODO Registro
+    trasformato_dop = get_trasformato_dop_giorno(client, caseificio_id, data_giorno)
     mozzarella_dop = get_mozzarella_dop_giorno(client, caseificio_id, data_giorno)
     return max(0.0, trasformato_dop - mozzarella_dop)
 
 
 def siero_totale_prodotto_giorno(client, caseificio_id, data_giorno):
-    trasformato_totale = get_trasformato_totale_giorno(client, caseificio_id, data_giorno)  # TODO Registro
+    trasformato_tot = get_trasformato_totale_giorno(client, caseificio_id, data_giorno)
     # TODO: sottrarre tutti i prodotti (non solo mozzarella DOP) ottenuti da tutto il latte,
     # quando la mappatura prodotto->tipo di latte sara' definita nel Registro riscritto.
-    # Per ora, in assenza del Registro, ritorna 0 come le altre funzioni TODO.
-    return max(0.0, trasformato_totale)
+    return max(0.0, trasformato_tot)
 
 
-# ------------------------------------------------------------
-# BLOCCO: SIERO UTILIZZATO PER RICOTTA DOP
-# ------------------------------------------------------------
 def siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno):
     ricotta_dop, prodotto = get_ricotta_dop_giorno(client, caseificio_id, data_giorno)
     if ricotta_dop <= 0:
@@ -113,38 +108,79 @@ def siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno):
 
 
 # ------------------------------------------------------------
-# BLOCCO: GIACENZA SIERO DOP (cumulativa su tutta la storia,
-# come da lezione imparata col bug del Registro - MAI solo sul
-# periodo corrente)
+# BLOCCO: DATI IN BLOCCO (una query sola per tutta la storia,
+# non una per giorno) - usati SOLO per calcolare la giacenza
+# cumulativa, mai in un ciclo che rifa' la stessa query ogni volta.
+# ------------------------------------------------------------
+def _bulk_trasformato(client, caseificio_id, fino_a_data, tipo_latte=None):
+    q = (
+        client.table("trasformato")
+        .select("tipo_latte, data, kg")
+        .eq("caseificio_id", caseificio_id)
+        .lte("data", str(fino_a_data))
+    )
+    if tipo_latte:
+        q = q.eq("tipo_latte", tipo_latte)
+    righe = q.execute().data
+    m = {}
+    for r in righe:
+        m[r["data"]] = m.get(r["data"], 0.0) + float(r["kg"] or 0)
+    return m
+
+
+def _bulk_produzione(client, caseificio_id, nome_contiene, solo_dop, fino_a_data):
+    prodotto = _trova_prodotto(client, caseificio_id, nome_contiene, solo_dop)
+    if not prodotto:
+        return {}, None
+    righe = (
+        client.table("produzioni")
+        .select("data, kg_totale")
+        .eq("prodotto_id", prodotto["id"])
+        .lte("data", str(fino_a_data))
+        .execute()
+        .data
+    )
+    return {r["data"]: float(r["kg_totale"] or 0) for r in righe}, prodotto
+
+
+# ------------------------------------------------------------
+# BLOCCO: GIACENZA SIERO DOP (storia completa, query in blocco)
 # ------------------------------------------------------------
 def giacenza_siero_dop(client, caseificio_id, alla_data, includi_giorno=False):
-    """Giacenza siero DOP calcolata su tutta la storia fino a 'alla_data'
-    (esclusa, salvo includi_giorno=True)."""
-    data_inizio = _dt.date(2000, 1, 1)  # inizio storia: da adattare se serve un limite piu' realistico
-    giorni = []
-    d = data_inizio
     limite = alla_data if includi_giorno else alla_data - _dt.timedelta(days=1)
-    while d <= limite:
-        giorni.append(d)
-        d += _dt.timedelta(days=1)
 
-    prodotto_tot = sum(siero_dop_prodotto_giorno(client, caseificio_id, g) for g in giorni)
-    utilizzato_tot = sum(siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, g)[0] for g in giorni)
+    trasf_map = _bulk_trasformato(client, caseificio_id, limite, tipo_latte="bufala_dop")
+    mozz_map, _ = _bulk_produzione(client, caseificio_id, "Mozzarella di Bufala Campana DOP", True, limite)
+    ricotta_map, _ = _bulk_produzione(client, caseificio_id, "Ricotta di Bufala Campana DOP", True, limite)
+    resa = get_resa_ricotta_dop(client, caseificio_id)
+
+    date_rilevanti = set(trasf_map) | set(mozz_map) | set(ricotta_map)
+
+    prodotto_tot = 0.0
+    utilizzato_tot = 0.0
+    for ds in date_rilevanti:
+        trasf = trasf_map.get(ds, 0.0)
+        mozz = mozz_map.get(ds, 0.0)
+        prodotto_tot += max(0.0, trasf - mozz)
+
+        ricotta = ricotta_map.get(ds, 0.0)
+        if ricotta > 0 and resa:
+            utilizzato_tot += ricotta / (resa / 100)
+
     return prodotto_tot - utilizzato_tot
 
 
 # ------------------------------------------------------------
-# BLOCCO: SMALTIMENTO (tabella smaltimento_siero - NUOVA,
-# da creare su Supabase)
+# BLOCCO: SMALTIMENTO (tabella smaltimento_siero - da creare su
+# Supabase, SQL nel commento sotto)
 #
-# SQL per crearla:
 # create table smaltimento_siero (
 #   id bigint generated always as identity primary key,
 #   caseificio_id bigint references caseifici(id),
 #   data date not null,
 #   azienda text not null,
 #   kg numeric not null,
-#   categoria text  -- es. "categoria 3"
+#   categoria text
 # );
 # ------------------------------------------------------------
 def get_smaltimenti_giorno(client, caseificio_id, data_giorno):
@@ -159,17 +195,19 @@ def get_smaltimenti_giorno(client, caseificio_id, data_giorno):
 
 
 def giacenza_siero_totale(client, caseificio_id, alla_data, includi_giorno=False):
-    data_inizio = _dt.date(2000, 1, 1)
-    giorni = []
-    d = data_inizio
     limite = alla_data if includi_giorno else alla_data - _dt.timedelta(days=1)
-    while d <= limite:
-        giorni.append(d)
-        d += _dt.timedelta(days=1)
 
-    prodotto_tot = sum(siero_totale_prodotto_giorno(client, caseificio_id, g) for g in giorni)
-    smaltiti = 0.0
-    for g in giorni:
-        for s in get_smaltimenti_giorno(client, caseificio_id, g):
-            smaltiti += float(s["kg"] or 0)
-    return prodotto_tot - smaltiti
+    trasf_map = _bulk_trasformato(client, caseificio_id, limite)  # tutti i tipi di latte
+
+    smaltimenti = (
+        client.table("smaltimento_siero")
+        .select("data, kg")
+        .eq("caseificio_id", caseificio_id)
+        .lte("data", str(limite))
+        .execute()
+        .data
+    )
+    smaltito_tot = sum(float(s["kg"] or 0) for s in smaltimenti)
+    prodotto_tot = sum(max(0.0, kg) for kg in trasf_map.values())
+
+    return prodotto_tot - smaltito_tot
