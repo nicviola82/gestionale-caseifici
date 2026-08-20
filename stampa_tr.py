@@ -27,7 +27,7 @@ import copy
 import shutil
 import openpyxl
 
-from stampa_mbc import get_registro_giacenza_apertura, TEMPLATE_PATH  # TODO: da aggiornare col nuovo Registro
+from stampa_mbc import get_registro_giacenza_apertura, TEMPLATE_PATH  # ora collegata al vero Registro
 
 FOGLIO = "tr"
 
