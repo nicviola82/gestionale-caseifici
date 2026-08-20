@@ -60,23 +60,29 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     # Q5 (Scheda N.) e U5 (Data) restano le formule originali =MBC!C3 / =MBC!H3, non toccarle
 
     # --- Primo Siero Acquistato (max 1 riga, come confermato) ---
+    # NOTA: A11:D12, E11:H12, I11:L12, M11:R12, S11:W12 sono le 5 celle unite reali -
+    # origine/ddt/kg/ora_rottura/tank vanno scritti sugli anchor A11/E11/I11/M11/S11.
     acquistato = get_siero_acquistato(client, caseificio_id, data_giorno)
     if acquistato:
-        ws["C11"] = acquistato.get("origine", "")
-        ws["H11"] = acquistato.get("ddt", "")
-        ws["K11"] = acquistato.get("kg", 0)
-        ws["N11"] = acquistato.get("ora_rottura", "")
-        ws["Q11"] = acquistato.get("tank", "")
+        ws["A11"] = acquistato.get("origine", "")
+        ws["E11"] = acquistato.get("ddt", "")
+        ws["I11"] = acquistato.get("kg", 0)
+        ws["M11"] = acquistato.get("ora_rottura", "")
+        ws["S11"] = acquistato.get("tank", "")
 
     # --- Primo Siero Autoprodotto (max 2 cicli, come confermato) ---
+    # ATTENZIONE: righe 25-26 e 27-28 NON hanno la stessa struttura di colonne unite
+    # (la riga 25 ha 4 blocchi larghi A/L/P/T, la riga 27 ne ha 7 piu' stretti A/F/H/J/L/P/T) -
+    # non e' un semplice ciclo "riga base + i" come nelle altre sezioni. Struttura da
+    # verificare con calma quando costruiamo davvero il collegamento al foglio Siero
+    # (per ora get_siero_autoprodotto() ritorna sempre lista vuota, quindi questo blocco
+    # non viene mai eseguito e non causa errori).
     autoprodotto = get_siero_autoprodotto(client, caseificio_id, data_giorno)
-    riga_base = 25
-    for i, ciclo in enumerate(autoprodotto[:2]):
-        r = riga_base + i
-        ws[f"C{r}"] = ciclo.get("origine", "")
-        ws[f"K{r}"] = ciclo.get("kg", 0)
-        ws[f"N{r}"] = ciclo.get("ora_rottura", "")
-        ws[f"Q{r}"] = ciclo.get("tank", "")
+    if autoprodotto:
+        raise NotImplementedError(
+            "Scrittura Primo Siero Autoprodotto non ancora implementata: "
+            "la struttura delle celle unite (righe 25-28) va verificata prima di scrivere qui."
+        )
 
     # --- Lavorazione ---
     ws["H41"] = get_siero_kg_totale_lavorato(client, caseificio_id, data_giorno)  # TODO Siero
@@ -88,13 +94,15 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     ws["F59"] = get_impostazione(client, caseificio_id, "temperatura_latte", data_giorno)
 
     # --- Caratteristiche prodotto finito: default "Idoneo" come nel template originale ---
-    for cella in ["F68", "F69", "F70"]:
+    # NOTA: F68:H69 e F70:H71 sono celle unite nel template - si scrive solo nella cella
+    # "principale" (in alto a sinistra) di ciascuna, F69 NON e' scrivibile (dentro il merge F68:H69).
+    for cella in ["F68", "F70"]:
         ws[cella] = "Idoneo"
 
     # --- Confezionamento (Ricotta di Bufala DOP prodotta) ---
     kg_ricotta = get_produzione_giorno(client, caseificio_id, data_giorno, "Ricotta di Bufala DOP")
-    ws["F78"] = kg_ricotta
-    ws["Q78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
+    ws["D78"] = kg_ricotta  # D78 e' l'anchor del merge D78:G79 (F78 e' dentro il merge, non scrivibile)
+    ws["P78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto - P78 anchor di P78:S79 (Q78 non scrivibile)
 
     wb.save(output_path)
     return output_path
