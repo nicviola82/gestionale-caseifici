@@ -100,11 +100,13 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     # ws["F59"] = ...  # TODO: nuovo campo "temperatura finale ricotta" in Impostazioni Fisse
     # ws["F61"] = ...  # TODO: nuovo campo "temperatura raffreddamento ricotta" in Impostazioni Fisse
 
-    # --- Caratteristiche prodotto finito: default "Idoneo" come nel template originale ---
-    # NOTA: F68:H69 e F70:H71 sono celle unite nel template - si scrive solo nella cella
-    # "principale" (in alto a sinistra) di ciascuna, F69 NON e' scrivibile (dentro il merge F68:H69).
-    for cella in ["F68", "F70"]:
-        ws[cella] = "Idoneo"
+    # --- Caratteristiche prodotto finito ---
+    # CORREZIONE IMPORTANTE: F68/I68 e R68/U68 sono le ETICHETTE delle colonne
+    # ("Idoneo"/"Non Idoneo") - gia' presenti nel template, NON vanno sovrascritte.
+    # Il valore va scritto in F70 (caratteristiche fisiche) e R70 (organolettiche),
+    # con una "x" (come nel template originale), non con la parola "Idoneo".
+    ws["F70"] = "x"
+    ws["R70"] = "x"
 
     # --- Confezionamento (Ricotta di Bufala DOP prodotta) ---
     # NOTA: intestazioni reali sono D76='Pezzatura', H76='Unita\' n\'', L76='ID. Lotto',
