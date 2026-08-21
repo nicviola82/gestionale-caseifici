@@ -2,6 +2,13 @@
 # PAGINA: CONFERITORI DI LATTE
 # Elenco, attivazione/disattivazione, ordine, dati specifici
 # per allevatori / caseifici-intermediari / congelatori.
+#
+# Ogni conferitore ha 3 azioni separate: Elimina, Modifica
+# (dati anagrafici), Stati sanitari/documenti - prima erano
+# unite in un solo popover "Modifica".
+# Nuovi campi: codice_stalla (solo allevatori), bollo_ce (per
+# caseificio/intermediario/congelatore - riconoscimento 853),
+# codice_abbreviativo (per tutti).
 # ============================================================
 import streamlit as st
 import datetime as _dt
@@ -32,9 +39,12 @@ if is_owner():
         with st.form("nuovo_conferitore"):
             tipo = st.selectbox("Tipo di conferitore", ["allevatore", "caseificio", "intermediario", "congelatore"])
             ragione_sociale = st.text_input("Ragione sociale")
+            codice_abbreviativo = st.text_input("Codice abbreviativo (usato nelle griglie al posto del nome)")
             sede_legale = st.text_input("Sede legale")
             sede_operativa = st.text_input("Sede operativa")
             piva = st.text_input("P.IVA")
+            codice_stalla = st.text_input("Codice di stalla (solo allevatori)")
+            bollo_ce = st.text_input("Numero bollo CE - riconoscimento 853 (caseificio/intermediario/congelatore)")
             tipi_latte = st.multiselect("Tipi di latte conferiti", TIPI_LATTE)
             ordine = st.number_input("Ordine di visualizzazione", min_value=1, step=1)
 
@@ -43,9 +53,12 @@ if is_owner():
                     "caseificio_id": caseificio_id,
                     "tipo": tipo,
                     "ragione_sociale": ragione_sociale,
+                    "codice_abbreviativo": codice_abbreviativo or None,
                     "sede_legale": sede_legale,
                     "sede_operativa": sede_operativa,
                     "piva": piva,
+                    "codice_stalla": codice_stalla if tipo == "allevatore" else None,
+                    "bollo_ce": bollo_ce if tipo != "allevatore" else None,
                     "ordine": int(ordine),
                 }).execute().data[0]
 
@@ -54,7 +67,7 @@ if is_owner():
                         "conferitore_id": nuovo["id"], "tipo_latte": tl
                     }).execute()
 
-                st.success("Conferitore salvato. Apri 'Modifica' per aggiungere dati sanitari/documenti.")
+                st.success("Conferitore salvato.")
                 st.rerun()
 
 st.divider()
@@ -78,26 +91,66 @@ if not conferitori:
 else:
     for c in conferitori:
         tipi = ", ".join([t["tipo_latte"] for t in c.get("conferitori_tipi_latte", [])]) or "-"
-        col1, col2, col3 = st.columns([1, 4, 2])
+        col1, col2, col3, col4, col5 = st.columns([1, 4, 1, 1, 1])
+
         with col1:
             nuovo_stato = st.checkbox("Attivo", value=c["attivo"], key=f"att_{c['id']}")
             if nuovo_stato != c["attivo"] and is_owner():
                 client.table("conferitori").update({"attivo": nuovo_stato}).eq("id", c["id"]).execute()
                 st.rerun()
+
         with col2:
-            st.write(f"**#{c['ordine']} - {c['ragione_sociale']}** ({c['tipo']}) — latte: {tipi}")
+            sigla = f" [{c['codice_abbreviativo']}]" if c.get("codice_abbreviativo") else ""
+            st.write(f"**#{c['ordine']} - {c['ragione_sociale']}**{sigla} ({c['tipo']}) — latte: {tipi}")
+            extra = []
+            if c.get("codice_stalla"):
+                extra.append(f"Cod. stalla: {c['codice_stalla']}")
+            if c.get("bollo_ce"):
+                extra.append(f"Bollo CE: {c['bollo_ce']}")
+            if extra:
+                st.caption(" · ".join(extra))
+
         with col3:
             if is_owner():
-                with st.popover("Modifica"):
-                    st.write("**Dati sanitari / documenti**")
+                with st.popover("✏️ Modifica"):
+                    with st.form(f"modifica_conferitore_{c['id']}"):
+                        m_ragione_sociale = st.text_input("Ragione sociale", value=c["ragione_sociale"], key=f"m_rs_{c['id']}")
+                        m_codice_abbreviativo = st.text_input("Codice abbreviativo", value=c.get("codice_abbreviativo") or "", key=f"m_cod_{c['id']}")
+                        m_sede_legale = st.text_input("Sede legale", value=c.get("sede_legale") or "", key=f"m_sl_{c['id']}")
+                        m_sede_operativa = st.text_input("Sede operativa", value=c.get("sede_operativa") or "", key=f"m_so_{c['id']}")
+                        m_piva = st.text_input("P.IVA", value=c.get("piva") or "", key=f"m_piva_{c['id']}")
+                        if c["tipo"] == "allevatore":
+                            m_codice_stalla = st.text_input("Codice di stalla", value=c.get("codice_stalla") or "", key=f"m_stalla_{c['id']}")
+                            m_bollo_ce = None
+                        else:
+                            m_codice_stalla = None
+                            m_bollo_ce = st.text_input("Numero bollo CE (853)", value=c.get("bollo_ce") or "", key=f"m_bce_{c['id']}")
+                        m_ordine = st.number_input("Ordine di visualizzazione", min_value=1, step=1, value=c["ordine"], key=f"m_ord_{c['id']}")
+                        if st.form_submit_button("Salva modifiche"):
+                            client.table("conferitori").update({
+                                "ragione_sociale": m_ragione_sociale,
+                                "codice_abbreviativo": m_codice_abbreviativo or None,
+                                "sede_legale": m_sede_legale,
+                                "sede_operativa": m_sede_operativa,
+                                "piva": m_piva,
+                                "codice_stalla": m_codice_stalla,
+                                "bollo_ce": m_bollo_ce,
+                                "ordine": int(m_ordine),
+                            }).eq("id", c["id"]).execute()
+                            st.success("Aggiornato.")
+                            st.rerun()
+
+        with col4:
+            if is_owner():
+                with st.popover("🩺 Stati sanitari"):
                     if c["tipo"] == "allevatore":
                         with st.form(f"sanitario_{c['id']}"):
                             tipo_es = st.selectbox("Tipo esame", ["brucellosi", "tubercolosi", "leucosi",
                                                                     "carica_batterica", "cellule_somatiche"],
                                                      key=f"tipoes_{c['id']}")
                             valore = st.number_input("Valore (se applicabile)", value=0.0, key=f"val_{c['id']}")
-                            rilascio = st.date_input("Data rilascio", value=_dt.date.today(), key=f"ril_{c['id']}")
-                            scadenza = st.date_input("Data scadenza", value=_dt.date.today(), key=f"sca_{c['id']}")
+                            rilascio = st.date_input("Data rilascio", value=_dt.date.today(), key=f"ril_{c['id']}", format="DD/MM/YYYY")
+                            scadenza = st.date_input("Data scadenza", value=_dt.date.today(), key=f"sca_{c['id']}", format="DD/MM/YYYY")
                             if st.form_submit_button("Aggiungi esame"):
                                 client.table("stati_sanitari").insert({
                                     "conferitore_id": c["id"], "tipo": tipo_es,
@@ -109,7 +162,7 @@ else:
                     else:
                         doc_tipo = "autocertificazione" if c["tipo"] in ("caseificio", "intermediario") else "contratto"
                         with st.form(f"doc_{c['id']}"):
-                            scadenza = st.date_input(f"Scadenza {doc_tipo}", value=_dt.date.today(), key=f"docsca_{c['id']}")
+                            scadenza = st.date_input(f"Scadenza {doc_tipo}", value=_dt.date.today(), key=f"docsca_{c['id']}", format="DD/MM/YYYY")
                             if st.form_submit_button(f"Salva {doc_tipo}"):
                                 client.table("documenti_conferitori").insert({
                                     "conferitore_id": c["id"], "tipo": doc_tipo,
@@ -117,6 +170,17 @@ else:
                                 }).execute()
                                 st.success("Salvato.")
                                 st.rerun()
+
+        with col5:
+            if is_owner():
+                if st.button("🗑️", key=f"del_{c['id']}", help="Elimina conferitore"):
+                    st.session_state[f"conferma_del_{c['id']}"] = True
+                if st.session_state.get(f"conferma_del_{c['id']}"):
+                    if st.button("Conferma eliminazione", key=f"del_conferma_{c['id']}"):
+                        client.table("conferitori").delete().eq("id", c["id"]).execute()
+                        st.session_state.pop(f"conferma_del_{c['id']}", None)
+                        st.success("Eliminato.")
+                        st.rerun()
 
 # ------------------------------------------------------------
 # BLOCCO: AVVISI SCADENZE
