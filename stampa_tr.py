@@ -112,9 +112,28 @@ def _copia_stile_riga(ws, riga_origine, riga_dest, colonne):
 COLONNE_BLOCCO = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
 
 
+def _trova_merge_colonna_a(ws, riga_inizio):
+    """Trova il merge verticale della colonna A (etichetta categoria) che inizia a riga_inizio,
+    se esiste. Ritorna il MergedCellRange o None."""
+    for r in list(ws.merged_cells.ranges):
+        if r.min_col == 1 and r.max_col == 1 and r.min_row == riga_inizio:
+            return r
+    return None
+
+
 def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_originale):
     """righe_dati vuoto => nessun conferitore attivo per questa categoria => blocco eliminato.
     righe_dati non vuoto => un conferitore attivo esiste, il blocco resta SEMPRE (anche a 0 kg)."""
+
+    # CORREZIONE BUG GRIGLIE: il template ha un merge verticale in colonna A (l'etichetta
+    # della categoria, es. "allevamenti dop...") che copre TUTTA l'altezza del blocco
+    # originale (es. A12:A28, 17 righe). ws.delete_rows/insert_rows NON lo ridimensiona da
+    # solo: il merge restava della vecchia altezza anche quando le righe reali erano molte
+    # di meno, creando una scatola enorme che sconfinava nel blocco successivo. Lo tolgo
+    # prima di toccare le righe e lo ricreo dopo, della dimensione giusta.
+    merge_a = _trova_merge_colonna_a(ws, riga_inizio)
+    if merge_a:
+        ws.unmerge_cells(str(merge_a))
 
     if not righe_dati:
         ws.delete_rows(riga_inizio, n_righe_template)
@@ -144,6 +163,11 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
         ws[f"I{r}"] = _acidita_random() if dato["kg"] > 0 else ""
         ws[f"J{r}"] = _temperatura_random() if dato["kg"] > 0 else ""
         ws[f"K{r}"] = "OK" if dato["kg"] > 0 else ""
+
+    # Ricreo il merge colonna A della dimensione corretta (n_dati righe, non piu' n_righe_template)
+    if merge_a and n_dati > 1:
+        ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
+        _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])  # mantiene lo stile sull'anchor
 
     return delta
 
