@@ -87,6 +87,38 @@ def get_conferimenti_per_categoria(client, caseificio_id, data_giorno, tipi_conf
     return totale, ddt_list
 
 
+def get_conferimenti_caseificio_dop_dettaglio(client, caseificio_id, data_giorno):
+    """Conferimenti giornalieri da conferitori tipo 'caseificio' con bufala_dop, UNO PER RIGA
+    (non sommati) - servono per D15/D16 (righe gia' presenti nel template, una per ogni
+    caseificio DOP da cui si e' acquistato quel giorno, confermato dall'utente)."""
+    conferitori = (
+        client.table("conferitori")
+        .select("*, conferitori_tipi_latte(tipo_latte)")
+        .eq("caseificio_id", caseificio_id)
+        .eq("attivo", True)
+        .eq("tipo", "caseificio")
+        .execute()
+        .data
+    )
+    conferitori = [
+        c for c in conferitori
+        if "bufala_dop" in [t["tipo_latte"] for t in c.get("conferitori_tipi_latte", [])]
+    ]
+    righe = []
+    for c in conferitori:
+        rec = (
+            client.table("conferimenti")
+            .select("*")
+            .eq("conferitore_id", c["id"])
+            .eq("data", str(data_giorno))
+            .execute()
+            .data
+        )
+        if rec and float(rec[0].get("kg") or 0) > 0:
+            righe.append({"kg": float(rec[0]["kg"]), "ddt": rec[0].get("ddt") or ""})
+    return righe
+
+
 def get_produzione_giorno(client, caseificio_id, data_giorno, contiene_nel_nome):
     """Somma kg_totale del giorno per prodotti il cui nome contiene una parola chiave (case-insensitive)."""
     prodotti = (
@@ -132,10 +164,20 @@ def get_registro_giacenza_chiusura(client, caseificio_id, data_giorno):
 
 # ------------------------------------------------------------
 # BLOCCO: NUMERO SCHEDA (progressivo = giorno dell'anno)
-# Assunzione confermata: usare il giorno dell'anno (1-366).
-# Se in futuro serve un contatore diverso, cambiare solo qui.
+# Confermato con l'utente: 25 febbraio = 56° giorno dell'anno = "56/26M" - il numero e'
+# sempre positivo (1-366), MAI negativo. Formato finale: "NNN/AA" + lettera (M per MBC, R per RBC).
+# ATTENZIONE: questa funzione e' SOLO per il campo "Scheda N." - il lotto dei prodotti (V10 ecc.)
+# e' un'altra cosa, dipende dal tipo di lotto scelto per il prodotto in Prodotti (da rivedere).
 # ------------------------------------------------------------
+def scheda_n(data_giorno, lettera="M"):
+    giorno_anno = data_giorno.timetuple().tm_yday
+    anno_breve = data_giorno.strftime("%y")
+    return f"{giorno_anno}/{anno_breve}{lettera}"
+
+
 def numero_scheda(data_giorno):
+    # Mantenuta per compatibilita' con la generazione provvisoria del lotto prodotti
+    # (in attesa di rifare il lotto secondo il tipo_lotto del prodotto, come richiesto)
     return data_giorno.timetuple().tm_yday
 
 
@@ -152,7 +194,7 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
     # --- Intestazione ---
     ws["C1"] = anagrafica.get("ragione_sociale", "")
     # ws["T1"] = codice RINA AGRIFOOD -> campo non ancora presente in Anagrafica, lasciato vuoto
-    ws["C3"] = numero_scheda(data_giorno)
+    ws["C3"] = scheda_n(data_giorno, lettera="M")
     ws["H3"] = data_giorno.strftime("%d/%m/%Y")
 
     ws["H5"] = get_impostazione(client, caseificio_id, "ora_ricevimento_latte", data_giorno)
@@ -173,6 +215,16 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
     )
     ws["D14"] = kg_raccoglitore
     ws["E14"] = ", ".join(ddt_raccoglitore)
+
+    # D15/D16: latte da caseifici DOP - una riga per ogni caseificio (max 2/giorno, confermato
+    # dall'utente che le righe esistono gia' nel template, nessuna modifica di struttura)
+    caseifici_dop = get_conferimenti_caseificio_dop_dettaglio(client, caseificio_id, data_giorno)
+    if len(caseifici_dop) >= 1:
+        ws["D15"] = caseifici_dop[0]["kg"]
+        ws["E15"] = caseifici_dop[0]["ddt"]
+    if len(caseifici_dop) >= 2:
+        ws["D16"] = caseifici_dop[1]["kg"]
+        ws["E16"] = caseifici_dop[1]["ddt"]
 
     # --- Sezione Lavorazione ---
     ws["G10"] = get_impostazione(client, caseificio_id, "temperatura_attivazione", data_giorno)
