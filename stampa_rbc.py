@@ -15,7 +15,7 @@
 import shutil
 import openpyxl
 
-from stampa_mbc import get_anagrafica, get_impostazione, get_produzione_giorno, numero_scheda
+from stampa_mbc import get_anagrafica, get_impostazione, get_produzione_giorno, numero_scheda, scheda_n
 
 FOGLIO = "RBC"
 
@@ -57,7 +57,10 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     # --- Intestazione ---
     ws["C5"] = anagrafica.get("ragione_sociale", "")
     # ws["L5"] = codice RINA AGRIFOOD -> non ancora presente in Anagrafica, lasciato vuoto
-    # Q5 (Scheda N.) e U5 (Data) restano le formule originali =MBC!C3 / =MBC!H3, non toccarle
+    # CORREZIONE: Q5 NON resta piu' la formula =MBC!C3 (copierebbe anche la lettera "M" di MBC) -
+    # va sovrascritta con la stessa data/progressivo ma lettera "R" (formato confermato: "31/26R")
+    ws["Q5"] = scheda_n(data_giorno, lettera="R")
+    # U5 (Data) resta la formula originale =MBC!H3, non si tocca
 
     # --- Primo Siero Acquistato (max 1 riga, come confermato) ---
     # NOTA: A11:D12, E11:H12, I11:L12, M11:R12, S11:W12 sono le 5 celle unite reali -
