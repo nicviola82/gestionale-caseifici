@@ -9,6 +9,7 @@ import pandas as pd
 import datetime as _dt
 from db import get_client
 from auth import login_form, logout_button, is_owner
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Dati Inseriti", layout="wide")
 if not login_form():
@@ -17,6 +18,7 @@ logout_button()
 client = get_client()
 
 st.title("Dati Inseriti")
+mostra_header_caseificio()
 
 caseificio_id = st.session_state.get("caseificio_id")
 periodo_inizio = st.session_state.get("periodo_inizio")
@@ -31,7 +33,6 @@ st.caption(f"Periodo: {st.session_state.get('periodo_label')}")
 TIPI_LATTE_LABEL = {
     "bufala_dop": "Bufala DOP", "bufala": "Bufala", "vaccino": "Vaccino",
     "semilavorato_bufala": "Semilavorato bufala", "semilavorato_vaccino": "Semilavorato vaccino",
-    "cagliata_bufala": "Cagliata bufala", "cagliata_vaccino": "Cagliata vaccino",
     "bufala_congelato": "Bufala congelato", "vaccino_congelato": "Vaccino congelato", "altro": "Altro",
 }
 
