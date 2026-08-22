@@ -13,6 +13,7 @@ logout_button()
 client = get_client()
 
 st.title("Anagrafica Caseificio")
+mostra_header_caseificio()
 
 if not is_owner():
     st.warning("Solo l'amministratore puo' modificare l'anagrafica.")
@@ -70,6 +71,7 @@ caseificio = client.table("caseifici").select("*").eq("id", caseificio_id).singl
 st.subheader(f"Dettaglio: {caseificio['ragione_sociale']}")
 
 import datetime as _dt
+from ui_helpers import mostra_header_caseificio
 oggi = _dt.date.today()
 for campo, etichetta in [("aut_852_scadenza", "Autorizzazione 852"), ("aut_853_scadenza", "Autorizzazione 853")]:
     val = caseificio.get(campo)
