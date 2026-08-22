@@ -12,6 +12,7 @@ from siero import (
     siero_utilizzato_ricotta_dop_giorno, giacenza_siero_dop, giacenza_siero_totale,
     get_ricotta_dop_giorno, get_smaltimenti_giorno,
 )
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Siero", layout="wide")
 if not login_form():
@@ -20,6 +21,7 @@ logout_button()
 client = get_client()
 
 st.title("Siero")
+mostra_header_caseificio()
 st.caption("Il siero è per differenza tra latte trasformato e prodotto ottenuto. Giacenza calcolata su tutta la storia.")
 
 caseificio_id = st.session_state.get("caseificio_id")
