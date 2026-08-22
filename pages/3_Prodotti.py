@@ -7,6 +7,7 @@
 import streamlit as st
 from db import get_client
 from auth import login_form, logout_button, is_owner
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Prodotti", layout="wide")
 if not login_form():
@@ -15,6 +16,7 @@ logout_button()
 client = get_client()
 
 st.title("Prodotti")
+mostra_header_caseificio()
 
 caseificio_id = st.session_state.get("caseificio_id")
 if not caseificio_id:
