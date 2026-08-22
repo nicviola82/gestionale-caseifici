@@ -12,35 +12,54 @@
 # genera_mbc() sia stata eseguita sullo stesso file prima
 # (o nello stesso momento) di genera_rbc().
 # ============================================================
+import math
 import shutil
 import openpyxl
 
-from stampa_mbc import get_anagrafica, get_impostazione, get_produzione_giorno, numero_scheda, scheda_n
+import siero
+from stampa_mbc import (
+    get_anagrafica, get_impostazione, get_produzione_giorno, numero_scheda, scheda_n,
+    calcola_lotto, r_int,
+)
 
 FOGLIO = "RBC"
 
+# Righe reali della tabella "Primo Siero Acquistato" (verificate sul template: la riga 11 e'
+# l'intestazione A11/E11/I11/M11/S11, i dati veri vanno nelle 4 righe sottostanti).
+RIGHE_PS_ACQUISTATO = [13, 15, 17, 19]
+
 
 # ------------------------------------------------------------
-# BLOCCO: DATI DAL FOGLIO SIERO (non ancora costruito nel
-# gestionale). Placeholder isolati, da ricollegare quando la
-# fase Siero sara' pronta - stesso principio delle funzioni
-# TODO in stampa_mbc.py.
+# BLOCCO: SERIALIZZAZIONE VALORI "SPECIALI" (uguale a quella usata in
+# pages/7_Impostazioni_Fisse.py per siero_stabilizzato e trattamento_termico_ricotta:
+# "SI|Opzione1,Opzione2" oppure "NO"). Duplicata qui (non importabile da una pagina Streamlit).
+# ------------------------------------------------------------
+def _parse_speciale(valore):
+    if not valore or valore == "NO":
+        return False, []
+    if valore.startswith("SI|"):
+        return True, [s for s in valore[3:].split(",") if s]
+    return False, []
+
+
+def _scadenza_corta(prodotto, data_giorno):
+    """Come calcola_scadenza ma con anno a 2 cifre (GG/MM/AA) - formato richiesto specificamente
+    per RBC T78, diverso dalla regola generale GG/MM/AAAA usata nel resto del programma."""
+    if not prodotto:
+        return ""
+    giorni = int(prodotto.get("giorni_scadenza") or 0)
+    return (data_giorno + __import__("datetime").timedelta(days=giorni)).strftime("%d/%m/%y")
+
+
+# ------------------------------------------------------------
+# BLOCCO: DATI DAL FOGLIO SIERO (acquisto/autoprodotto multi-giorno non ancora costruiti nel
+# gestionale). Placeholder isolati, da ricollegare quando la fase Siero sara' pronta.
 # ------------------------------------------------------------
 def get_siero_acquistato(client, caseificio_id, data_giorno):
-    """Ritorna al massimo 1 riga (confermato: max un acquisto di siero da altro caseificio a giornata)."""
+    """Ritorna una lista di acquisti (max 4/giorno, una riga per caseificio DOP - righe 13-19
+    del template). Per ora nessuna fonte dati -> lista vuota, nessuna riga scritta."""
     # TODO: collegare al foglio Siero quando pronto
-    return None  # es. futuro: {"origine": ..., "ddt": ..., "kg": ..., "ora_rottura": ..., "tank": ...}
-
-
-def get_siero_autoprodotto(client, caseificio_id, data_giorno):
-    """Ritorna fino a 2 cicli (confermato: max 2 cicli di lavorazione al giorno)."""
-    # TODO: collegare al foglio Siero quando pronto
-    return []  # es. futuro: [{"origine": ..., "kg": ..., "ora_rottura": ..., "tank": ...}, ...]
-
-
-def get_siero_kg_totale_lavorato(client, caseificio_id, data_giorno):
-    # TODO: collegare al foglio Siero quando pronto
-    return 0.0
+    return []  # es. futuro: [{"origine": ..., "ddt": ..., "kg": ..., "ora_rottura": ..., "tank": ...}, ...]
 
 
 # ------------------------------------------------------------
@@ -62,46 +81,87 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     ws["Q5"] = scheda_n(data_giorno, lettera="R")
     # U5 (Data) resta la formula originale =MBC!H3, non si tocca
 
-    # --- Primo Siero Acquistato (max 1 riga, come confermato) ---
-    # NOTA: A11:D12, E11:H12, I11:L12, M11:R12, S11:W12 sono le 5 celle unite reali -
-    # origine/ddt/kg/ora_rottura/tank vanno scritti sugli anchor A11/E11/I11/M11/S11.
-    acquistato = get_siero_acquistato(client, caseificio_id, data_giorno)
-    if acquistato:
-        ws["A11"] = acquistato.get("origine", "")
-        ws["E11"] = acquistato.get("ddt", "")
-        ws["I11"] = acquistato.get("kg", 0)
-        ws["M11"] = acquistato.get("ora_rottura", "")
-        ws["S11"] = acquistato.get("tank", "")
+    # --- Primo Siero Acquistato (righe dati reali 13/15/17/19 - la riga 11 e' l'intestazione,
+    # errore corretto qui: la versione precedente scriveva sopra le etichette in riga 11) ---
+    acquistati = get_siero_acquistato(client, caseificio_id, data_giorno)
+    for i, riga in enumerate(RIGHE_PS_ACQUISTATO):
+        if i >= len(acquistati):
+            break
+        a = acquistati[i]
+        ws[f"A{riga}"] = a.get("origine", "")
+        ws[f"E{riga}"] = a.get("ddt", "")
+        ws[f"I{riga}"] = r_int(a.get("kg", 0))
+        ws[f"M{riga}"] = a.get("ora_rottura", "")
+        ws[f"S{riga}"] = a.get("tank", "")
 
-    # --- Primo Siero Autoprodotto (max 2 cicli, come confermato) ---
-    # ATTENZIONE: righe 25-26 e 27-28 NON hanno la stessa struttura di colonne unite
-    # (la riga 25 ha 4 blocchi larghi A/L/P/T, la riga 27 ne ha 7 piu' stretti A/F/H/J/L/P/T) -
-    # non e' un semplice ciclo "riga base + i" come nelle altre sezioni. Struttura da
-    # verificare con calma quando costruiamo davvero il collegamento al foglio Siero
-    # (per ora get_siero_autoprodotto() ritorna sempre lista vuota, quindi questo blocco
-    # non viene mai eseguito e non causa errori).
-    autoprodotto = get_siero_autoprodotto(client, caseificio_id, data_giorno)
-    if autoprodotto:
-        raise NotImplementedError(
-            "Scrittura Primo Siero Autoprodotto non ancora implementata: "
-            "la struttura delle celle unite (righe 25-28) va verificata prima di scrivere qui."
-        )
+    # --- Primo Siero Autoprodotto (riga 27 = SEMPRE il giorno stesso, come confermato) ---
+    # F27/J27 restano le formule originali del template (=Q5 e =U5, cioe' scheda/data di
+    # QUESTO stesso foglio RBC) - corrette di default, non si toccano.
+    kg_siero_oggi = siero.siero_dop_prodotto_giorno(client, caseificio_id, data_giorno)
+    ws["L27"] = r_int(kg_siero_oggi)  # stesso valore di MBC D22 (siero autoprodotto oggi)
+    ws["P27"] = get_impostazione(client, caseificio_id, "ora_siero_autoprodotto_rbc", data_giorno)
+    ws["T27"] = "trasformazione autoprodotta"
+    # Righe 29/31/33: da usare quando la ricotta DOP del giorno consuma anche siero di giorni
+    # PRECEDENTI (giacenza) - in quel caso vanno indicate scheda e data del giorno originale di
+    # produzione di quel siero e T29/T31/T33 andrebbe scritto "tank siero". Non ancora costruito:
+    # serve tracciare DA QUALI giorni specifici viene prelevato l'avanzo (oggi la giacenza in
+    # siero.py e' solo un totale cumulativo, non un elenco di lotti per data). TODO futuro.
 
-    # --- Lavorazione ---
-    ws["H41"] = get_siero_kg_totale_lavorato(client, caseificio_id, data_giorno)  # TODO Siero
-    ws["N41"] = 1  # default automatico confermato, modificabile a mano prima della stampa
+    # --- PS Stabilizzato (righe 37/38/39: Pastorizzato/Termizzato/Refrigerato) ---
+    valore_stabilizzato = get_impostazione(client, caseificio_id, "siero_stabilizzato", data_giorno)
+    si_stabilizzato, tipi_stabilizzato = _parse_speciale(valore_stabilizzato)
+    ws["H37"] = "X" if si_stabilizzato and "Pastorizzato" in tipi_stabilizzato else ""
+    ws["H38"] = "X" if si_stabilizzato and "Termizzato" in tipi_stabilizzato else ""
+    ws["H39"] = "X" if si_stabilizzato and "Refrigerato" in tipi_stabilizzato else ""
 
-    # K45 (acidita' primo siero) e K51 (sale) restano le formule originali del template - non toccarle
+    # --- Quantita' totale PS lavorato + n° cicli ---
+    # H41: sostituita la formula rotta del template "=H78/4*40" - il PS lavorato e' il siero
+    # REALMENTE consumato per la ricotta DOP prodotta oggi (ricotta / % resa, principio
+    # "niente si crea e nulla si distrugge" gia' usato in siero.py).
+    kg_ps_lavorato, _errore_resa = siero.siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno)
+    ws["H41"] = r_int(kg_ps_lavorato)
+    # N41: CORREZIONE - non piu' input manuale con default 1, calcolato dal siero lavorato:
+    # ogni ciclo lavora al MASSIMO 900 kg (es. 1200 kg = 2 cicli, 2100 kg = 3 cicli).
+    ws["N41"] = max(1, math.ceil(kg_ps_lavorato / 900)) if kg_ps_lavorato > 0 else 1
 
-    # NOTA: F53 NON e' l'acidita' (quella e' gia' calcolata automaticamente dalla formula
-    # originale in K45, corretta e da NON toccare) - F53 e' la quantita' kg dell'agente
-    # acidificante "Cizza di Mozzarella" (vedi H53). Rimosso lo scambio errato.
-    # F59/F61 (temperatura finale/raffreddamento ricotta) NON possono usare "temperatura_latte"
-    # di Impostazioni Fisse (quello e' per il latte crudo in cella frigo, tutt'altro range) -
-    # serve un campo dedicato non ancora presente in Impostazioni Fisse. Lasciati vuoti per ora.
-    # ws["F53"] = ...  # TODO: kg Cizza di Mozzarella (nuovo campo da costruire)
-    # ws["F59"] = ...  # TODO: nuovo campo "temperatura finale ricotta" in Impostazioni Fisse
-    # ws["F61"] = ...  # TODO: nuovo campo "temperatura raffreddamento ricotta" in Impostazioni Fisse
+    # K45 (acidita' primo siero) resta la formula originale del template - non toccarla.
+
+    # --- Aggiunte (percentuali da Impostazioni Fisse, convertite in kg sul PS lavorato) ---
+    perc_latte_bufala = get_impostazione(client, caseificio_id, "perc_latte_bufala_rbc", data_giorno)
+    perc_panna_fresca = get_impostazione(client, caseificio_id, "perc_panna_fresca_rbc", data_giorno)
+    try:
+        ws["K47"] = r_int(float(perc_latte_bufala or 0) / 100 * kg_ps_lavorato)
+    except ValueError:
+        ws["K47"] = ""
+    try:
+        ws["K49"] = r_int(float(perc_panna_fresca or 0) / 100 * kg_ps_lavorato)
+    except ValueError:
+        ws["K49"] = ""
+    # K51 (sale) resta la formula originale del template "=H41*0.3%" - non toccarla (decisione
+    # gia' presa in precedenza); il campo Impostazioni Fisse kg_sale_rbc resta disponibile per
+    # un futuro riallineamento se si decidera' di sostituire anche questa formula.
+
+    # --- Agenti acidificanti (F53/F55/F57 = "X" su quello scelto, gli altri vuoti) ---
+    agente = get_impostazione(client, caseificio_id, "agente_acidificante_rbc", data_giorno)
+    ws["F53"] = "X" if agente == "Cizza di Mozzarella di Bufala Campana DOP" else ""
+    ws["F55"] = "X" if agente == "Acido Lattico" else ""
+    ws["F57"] = "X" if agente == "Acido Citrico" else ""
+
+    # --- Temperature ricotta (F59/F61, da Impostazioni Fisse - nuovi campi dedicati) ---
+    temp_finale = get_impostazione(client, caseificio_id, "temperatura_finale_ricotta", data_giorno)
+    temp_raffreddamento = get_impostazione(client, caseificio_id, "temperatura_raffreddamento_ricotta", data_giorno)
+    ws["F59"] = f"{temp_finale} °C" if temp_finale else ""
+    ws["F61"] = f"{temp_raffreddamento} °C" if temp_raffreddamento else ""
+
+    # --- Trattamento termico della ricotta (SI/NO in L63/O63, Lisciatura/Omogeneizzazione in S63/T63) ---
+    valore_trattamento = get_impostazione(client, caseificio_id, "trattamento_termico_ricotta", data_giorno)
+    si_trattamento, tipi_trattamento = _parse_speciale(valore_trattamento)
+    ws["L63"] = "x" if si_trattamento else ""
+    ws["O63"] = "" if si_trattamento else "x"
+    ws["S63"] = "x" if si_trattamento and "Lisciatura" in tipi_trattamento else ""
+    # T63 non ha una cella separata per la croce nel template (finisce in colonna W) - la croce
+    # viene aggiunta dentro la stessa etichetta, come unica soluzione compatibile con la struttura.
+    ws["T63"] = "OMOGENEIZZAZIONE X" if si_trattamento and "Omogeneizzazione" in tipi_trattamento else "OMOGENEIZZAZIONE"
 
     # --- Caratteristiche prodotto finito ---
     # CORREZIONE IMPORTANTE: F68/I68 e R68/U68 sono le ETICHETTE delle colonne
@@ -112,13 +172,22 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     ws["R70"] = "x"
 
     # --- Confezionamento (Ricotta di Bufala DOP prodotta) ---
-    # NOTA: intestazioni reali sono D76='Pezzatura', H76='Unita\' n\'', L76='ID. Lotto',
-    # P76='Data confezionamento', T76='Scadenza' - il lotto va in L78 (non P78, che e'
-    # la data di confezionamento), corretto qui.
-    kg_ricotta = get_produzione_giorno(client, caseificio_id, data_giorno, "Ricotta di Bufala DOP")
-    ws["D78"] = kg_ricotta
-    ws["L78"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
-    ws["P78"] = data_giorno.strftime("%d/%m/%Y")  # data confezionamento
+    # D78 (Pezzatura): valore FISSO "250" gia' presente nel template - NON e' la quantita' di
+    # ricotta prodotta, non va toccato (correzione: la versione precedente lo sovrascriveva per errore).
+    # H78 (Unita' n°): kg prodotti MOLTIPLICATO 4. L78 (ID Lotto): secondo il tipo_lotto reale
+    # del prodotto (stessa logica di MBC V10). T78 (Scadenza): formato GG/MM/AA (2 cifre anno,
+    # richiesta specifica per questa cella, diversa dalla regola generale GG/MM/AAAA).
+    kg_ricotta, prodotto_ricotta = siero.get_ricotta_dop_giorno(client, caseificio_id, data_giorno)
+    if kg_ricotta > 0:
+        ws["H78"] = r_int(kg_ricotta * 4)
+        ws["L78"] = calcola_lotto(prodotto_ricotta, data_giorno)
+        ws["P78"] = data_giorno.strftime("%d/%m/%Y")  # data confezionamento
+        ws["T78"] = _scadenza_corta(prodotto_ricotta, data_giorno)
+    else:
+        ws["H78"] = ""
+        ws["L78"] = ""
+        ws["P78"] = ""
+        ws["T78"] = ""
 
     wb.save(output_path)
     return output_path
