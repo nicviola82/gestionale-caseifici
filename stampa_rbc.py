@@ -12,6 +12,7 @@
 # genera_mbc() sia stata eseguita sullo stesso file prima
 # (o nello stesso momento) di genera_rbc().
 # ============================================================
+import datetime as _dt
 import math
 import shutil
 import openpyxl
@@ -48,7 +49,7 @@ def _scadenza_corta(prodotto, data_giorno):
     if not prodotto:
         return ""
     giorni = int(prodotto.get("giorni_scadenza") or 0)
-    return (data_giorno + __import__("datetime").timedelta(days=giorni)).strftime("%d/%m/%y")
+    return (data_giorno + _dt.timedelta(days=giorni)).strftime("%d/%m/%y")
 
 
 # ------------------------------------------------------------
@@ -64,13 +65,13 @@ def get_siero_acquistato(client, caseificio_id, data_giorno):
 
 # ------------------------------------------------------------
 # BLOCCO: COMPILAZIONE FOGLIO RBC
-# Va chiamata sullo STESSO file .xlsx su cui e' gia' stata
-# chiamata genera_mbc() per lo stesso giorno.
+# _compila_rbc() scrive i dati di UN giorno su UN foglio worksheet gia' aperto - stessa idea di
+# _compila_mbc() in stampa_mbc.py, per riutilizzare la logica dentro un workbook multi-giorno.
+# Puo' essere chiamata sia sullo STESSO file su cui e' gia' stata chiamata genera_mbc() per lo
+# stesso giorno (comportamento storico), sia in un file separato (vedi genera_rbc_periodo) - in
+# entrambi i casi Q5/U5 vengono scritti come valori letterali, mai piu' come formula verso MBC.
 # ------------------------------------------------------------
-def genera_rbc(client, caseificio_id, data_giorno, output_path):
-    wb = openpyxl.load_workbook(output_path)
-    ws = wb[FOGLIO]
-
+def _compila_rbc(ws, client, caseificio_id, data_giorno):
     anagrafica = get_anagrafica(client, caseificio_id)
 
     # --- Intestazione ---
@@ -79,20 +80,33 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
     # CORREZIONE: Q5 NON resta piu' la formula =MBC!C3 (copierebbe anche la lettera "M" di MBC) -
     # va sovrascritta con la stessa data/progressivo ma lettera "R" (formato confermato: "31/26R")
     ws["Q5"] = scheda_n(data_giorno, lettera="R")
-    # U5 (Data) resta la formula originale =MBC!H3, non si tocca
+    # CORREZIONE: U5 (Data) NON resta piu' la formula originale "=MBC!H3" - ora che RBC puo'
+    # essere generato anche in un file separato da MBC (fogli stampabili per periodo), quella
+    # formula punterebbe a un foglio inesistente. Scritta come valore letterale, sempre corretto
+    # sia nel file combinato MBC+RBC sia nel file RBC-solo del periodo.
+    ws["U5"] = data_giorno.strftime("%d/%m/%Y")
 
     # --- Primo Siero Acquistato (righe dati reali 13/15/17/19 - la riga 11 e' l'intestazione,
-    # errore corretto qui: la versione precedente scriveva sopra le etichette in riga 11) ---
+    # errore corretto qui: la versione precedente scriveva sopra le etichette in riga 11).
+    # Tutte le 4 righe vengono sempre scritte (anche vuote "") - necessario per la generazione
+    # multi-giorno (genera_rbc_periodo), dove lo stesso foglio e' duplicato da un giorno
+    # all'altro: senza pulizia esplicita, i dati di un giorno resterebbero visibili anche nel
+    # foglio del giorno successivo se quel giorno non ha acquisti.
     acquistati = get_siero_acquistato(client, caseificio_id, data_giorno)
     for i, riga in enumerate(RIGHE_PS_ACQUISTATO):
-        if i >= len(acquistati):
-            break
-        a = acquistati[i]
-        ws[f"A{riga}"] = a.get("origine", "")
-        ws[f"E{riga}"] = a.get("ddt", "")
-        ws[f"I{riga}"] = r_int(a.get("kg", 0))
-        ws[f"M{riga}"] = a.get("ora_rottura", "")
-        ws[f"S{riga}"] = a.get("tank", "")
+        if i < len(acquistati):
+            a = acquistati[i]
+            ws[f"A{riga}"] = a.get("origine", "")
+            ws[f"E{riga}"] = a.get("ddt", "")
+            ws[f"I{riga}"] = r_int(a.get("kg", 0))
+            ws[f"M{riga}"] = a.get("ora_rottura", "")
+            ws[f"S{riga}"] = a.get("tank", "")
+        else:
+            ws[f"A{riga}"] = ""
+            ws[f"E{riga}"] = ""
+            ws[f"I{riga}"] = ""
+            ws[f"M{riga}"] = ""
+            ws[f"S{riga}"] = ""
 
     # --- Primo Siero Autoprodotto (riga 27 = SEMPRE il giorno stesso, come confermato) ---
     # F27/J27 restano le formule originali del template (=Q5 e =U5, cioe' scheda/data di
@@ -188,6 +202,36 @@ def genera_rbc(client, caseificio_id, data_giorno, output_path):
         ws["L78"] = ""
         ws["P78"] = ""
         ws["T78"] = ""
+
+
+def genera_rbc(client, caseificio_id, data_giorno, output_path):
+    """Un solo giorno = un solo foglio RBC (comportamento originale, invariato) - va chiamata
+    sullo STESSO file .xlsx su cui e' gia' stata chiamata genera_mbc() per lo stesso giorno."""
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb[FOGLIO]
+    _compila_rbc(ws, client, caseificio_id, data_giorno)
+    wb.save(output_path)
+    return output_path
+
+
+def genera_rbc_periodo(client, caseificio_id, data_da, data_a, output_path):
+    """Un file RBC con UN FOGLIO PER GIORNO nell'intervallo [data_da, data_a] (inclusi).
+    File separato da MBC/tr, come richiesto - non contiene gli altri due fogli del template."""
+    from stampa_mbc import TEMPLATE_PATH  # stesso file sorgente templates_dop.xlsx
+
+    shutil.copy(TEMPLATE_PATH, output_path)
+    wb = openpyxl.load_workbook(output_path)
+    for nome in list(wb.sheetnames):
+        if nome != FOGLIO:
+            del wb[nome]
+    ws_template = wb[FOGLIO]
+
+    n_giorni = (data_a - data_da).days + 1
+    for i in range(n_giorni):
+        giorno = data_da + _dt.timedelta(days=i)
+        ws = ws_template if i == 0 else wb.copy_worksheet(ws_template)
+        ws.title = giorno.strftime("%d-%m-%Y")
+        _compila_rbc(ws, client, caseificio_id, giorno)
 
     wb.save(output_path)
     return output_path
