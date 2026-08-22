@@ -10,6 +10,7 @@ from auth import login_form, logout_button
 from stampa_mbc import genera_mbc, genera_mbc_periodo
 from stampa_rbc import genera_rbc, genera_rbc_periodo
 from stampa_tr import genera_tr, genera_tr_periodo
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Fogli Stampabili", layout="wide")
 if not login_form():
@@ -18,6 +19,7 @@ logout_button()
 client = get_client()
 
 st.title("Fogli Stampabili")
+mostra_header_caseificio()
 st.caption("Genera i documenti ufficiali (MBC, RBC, tr) compilati con i dati del giorno o del periodo scelto.")
 
 caseificio_id = st.session_state.get("caseificio_id")
