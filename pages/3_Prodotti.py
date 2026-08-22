@@ -22,11 +22,13 @@ if not caseificio_id:
     st.stop()
 
 PRODOTTI_BASE = [
-    "Mozzarella di Bufala Campana DOP", "Mozzarella di latte di Bufala", "Ricotta di Bufala DOP",
+    "Mozzarella di Bufala Campana DOP", "Mozzarella di Bufala Campana DOP Affumicata",
+    "Mozzarella di latte di Bufala", "Ricotta di Bufala DOP",
     "Ricotta di Bufala", "Mozzarella mista (bufala/vaccino)", "Semilavorato",
     "Caciocavallo di bufala", "Caciocavallo misto", "Caciocavallo vaccino",
     "Figliata di bufala", "Burrata di bufala",
     "Mozzarella di latte di Bufala senza lattosio", "Mozzarella DOP senza lattosio",
+    "Mozzarella (latte vaccino)", "Nero di Bufala",
 ]
 
 TIPI_LOTTO = ["data_produzione", "data_scadenza", "giuliano"]
