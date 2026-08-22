@@ -9,6 +9,7 @@ import streamlit as st
 import datetime as _dt
 from db import get_client
 from auth import login_form, logout_button, is_owner
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Impostazioni Fisse", layout="wide")
 if not login_form():
@@ -17,6 +18,7 @@ logout_button()
 client = get_client()
 
 st.title("Impostazioni Fisse")
+mostra_header_caseificio()
 st.caption("Ogni valore che imposti resta valido da quella data in poi, finche' non lo modifichi di nuovo. Serve per i fogli stampabili (MBC, RBC, tr).")
 
 caseificio_id = st.session_state.get("caseificio_id")
