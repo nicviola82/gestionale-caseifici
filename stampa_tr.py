@@ -217,12 +217,10 @@ def _prodotti_finiti(client, caseificio_id, data_giorno):
     return righe
 
 
-def genera_tr(client, caseificio_id, data_giorno, output_path, copia_da_template=True):
-    if copia_da_template:
-        shutil.copy(TEMPLATE_PATH, output_path)
-    wb = openpyxl.load_workbook(output_path)
-    ws = wb[FOGLIO]
-
+def _compila_tr(ws, client, caseificio_id, data_giorno):
+    """Scrive i dati di UN giorno su UN foglio 'tr' worksheet gia' aperto - separata da
+    genera_tr() (apertura/salvataggio file) cosi' si puo' riusare dentro un workbook
+    multi-giorno (vedi genera_tr_periodo), stessa idea di _compila_mbc/_compila_rbc."""
     is_dop = _caseificio_is_dop(client, caseificio_id)
     offset = 0
     totali = {"bufala_dop": 0.0, "bufala": 0.0, "vaccino": 0.0}
@@ -271,9 +269,50 @@ def genera_tr(client, caseificio_id, data_giorno, output_path, copia_da_template
         r = riga_prod + i
         ws[f"A{r}"] = prod["nome"]
         ws[f"D{r}"] = prod["quantita"]
-        ws[f"F{r}"] = f"{data_giorno.strftime('%Y%m%d')}" if prod["quantita"] > 0 else ""
+        # CORREZIONE formato data: era "%Y%m%d" (es. 20260822), ora GG/MM/AAAA come da regola
+        # generale del programma, come tutte le altre date visualizzate.
+        ws[f"F{r}"] = data_giorno.strftime("%d/%m/%Y") if prod["quantita"] > 0 else ""
         ws[f"H{r}"] = prod["diretta"]
         ws[f"J{r}"] = prod["terzi"]
 
+
+def genera_tr(client, caseificio_id, data_giorno, output_path, copia_da_template=True):
+    """Un solo giorno = un solo foglio tr (comportamento originale, invariato)."""
+    if copia_da_template:
+        shutil.copy(TEMPLATE_PATH, output_path)
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb[FOGLIO]
+    _compila_tr(ws, client, caseificio_id, data_giorno)
+    wb.save(output_path)
+    return output_path
+
+
+def genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path):
+    """Un file tr con UN FOGLIO PER GIORNO nell'intervallo [data_da, data_a] (inclusi).
+    File separato da MBC/RBC, come richiesto - non contiene gli altri due fogli del template.
+    NOTA IMPORTANTE: il foglio tr ha righe dinamiche (inserite/rimosse in base ai conferitori
+    del giorno) - ogni giorno DEVE partire da una copia "pulita" del template originale, mai
+    dal foglio gia' compilato del giorno precedente (che potrebbe avere righe inserite/rimosse
+    diverse). Per questo si tiene un foglio "pristine" nascosto, usato solo come sorgente per
+    wb.copy_worksheet(), e lo si cancella alla fine.
+    """
+    import datetime as _dt
+
+    shutil.copy(TEMPLATE_PATH, output_path)
+    wb = openpyxl.load_workbook(output_path)
+    for nome in list(wb.sheetnames):
+        if nome != FOGLIO:
+            del wb[nome]
+    ws_pristine = wb[FOGLIO]
+    ws_pristine.title = "_pristine_tr"
+
+    n_giorni = (data_a - data_da).days + 1
+    for i in range(n_giorni):
+        giorno = data_da + _dt.timedelta(days=i)
+        ws = wb.copy_worksheet(ws_pristine)
+        ws.title = giorno.strftime("%d-%m-%Y")
+        _compila_tr(ws, client, caseificio_id, giorno)
+
+    del wb["_pristine_tr"]
     wb.save(output_path)
     return output_path
