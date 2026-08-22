@@ -13,9 +13,27 @@ import shutil
 import openpyxl
 
 import registro_calc
+import siero
 
 TEMPLATE_PATH = "templates_dop.xlsx"  # percorso del file originale scaricato da GitHub
 FOGLIO = "MBC"
+
+
+# ------------------------------------------------------------
+# BLOCCO: REGOLA ARROTONDAMENTO
+# Confermata dall'utente: nella MATRICE MATERIE PRIME (latte,
+# siero, semilavorato) ogni numero si arrotonda a INTERO PRIMA
+# di essere scritto/sommato. Nella MATRICE PRODOTTO (mozzarella,
+# altri formaggi) si mantengono fino a 2 decimali.
+# ------------------------------------------------------------
+def r_int(x):
+    """Arrotonda a intero (materie prime): usare SEMPRE per latte/siero/semilavorato."""
+    return int(round(float(x or 0)))
+
+
+def r_prod(x):
+    """Arrotonda a 2 decimali (prodotto finito): mozzarella, altri formaggi, ricotta."""
+    return round(float(x or 0), 2)
 
 
 # ------------------------------------------------------------
@@ -145,6 +163,67 @@ def get_produzione_giorno(client, caseificio_id, data_giorno, contiene_nel_nome)
     return totale
 
 
+def get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, contiene_nel_nome, solo_dop=None):
+    """Come get_produzione_giorno ma ritorna anche il record prodotto (per tipo_lotto/giorni_scadenza)
+    e il record produzione completo (kg_totale/kg_diretta/kg_terzi), non solo il totale kg."""
+    prodotti = (
+        client.table("prodotti")
+        .select("*")
+        .eq("caseificio_id", caseificio_id)
+        .eq("attivo", True)
+        .execute()
+        .data
+    )
+    match = [p for p in prodotti if contiene_nel_nome.lower() in p["nome"].lower()]
+    if solo_dop is not None:
+        match = [p for p in match if p["is_dop"] == solo_dop]
+    if not match:
+        return None, None
+    prodotto = match[0]
+    rec = (
+        client.table("produzioni")
+        .select("*")
+        .eq("prodotto_id", prodotto["id"])
+        .eq("data", str(data_giorno))
+        .execute()
+        .data
+    )
+    return prodotto, (rec[0] if rec else None)
+
+
+def get_altri_formaggi_dop_giorno(client, caseificio_id, data_giorno, escludi_prodotto_id):
+    """Somma kg_totale del giorno di tutti i prodotti DOP diversi dalla Mozzarella di Bufala
+    Campana DOP (esclusa per id) e dalla Ricotta (gestita a parte nel blocco RBC/T20-W20)."""
+    prodotti = (
+        client.table("prodotti")
+        .select("*")
+        .eq("caseificio_id", caseificio_id)
+        .eq("attivo", True)
+        .eq("is_dop", True)
+        .execute()
+        .data
+    )
+    match = [p for p in prodotti if p["id"] != escludi_prodotto_id and "ricotta" not in p["nome"].lower()]
+    totale = 0.0
+    for p in match:
+        rec = (
+            client.table("produzioni")
+            .select("kg_totale")
+            .eq("prodotto_id", p["id"])
+            .eq("data", str(data_giorno))
+            .execute()
+            .data
+        )
+        if rec:
+            totale += float(rec[0].get("kg_totale") or 0)
+    return totale
+
+
+def get_semilavorato_bufala_dop_giorno(client, caseificio_id, data_giorno):
+    """Semilavorato di bufala DOP trasformato (usato) nel giorno - dal Registro."""
+    return registro_calc.trasformato(client, caseificio_id, "semilavorato_bufala", data_giorno)
+
+
 # Ricollegate al vero Registro (registro_calc.py) - stessa logica usata dalla pagina Registro.
 def get_registro_giacenza_apertura(client, caseificio_id, data_giorno):
     return registro_calc.giacenza_apertura(client, caseificio_id, "bufala_dop", data_giorno)
@@ -182,6 +261,33 @@ def numero_scheda(data_giorno):
 
 
 # ------------------------------------------------------------
+# BLOCCO: LOTTO PRODOTTO (secondo il tipo_lotto scelto in Prodotti)
+# Sostituisce il precedente lotto generico "AAAAMMGG-progressivo":
+# ora dipende dal campo tipo_lotto del prodotto specifico.
+#   - "data_produzione" -> data del giorno (GG/MM/AAAA)
+#   - "data_scadenza"   -> data del giorno + giorni_scadenza (GG/MM/AAAA)
+#   - "giuliano"        -> calendario giuliano progressivo (1-366)
+# ------------------------------------------------------------
+def calcola_lotto(prodotto, data_giorno):
+    if not prodotto:
+        return ""
+    tipo_lotto = prodotto.get("tipo_lotto")
+    if tipo_lotto == "data_scadenza":
+        giorni = int(prodotto.get("giorni_scadenza") or 0)
+        return (data_giorno + _dt.timedelta(days=giorni)).strftime("%d/%m/%Y")
+    if tipo_lotto == "giuliano":
+        return str(data_giorno.timetuple().tm_yday)
+    return data_giorno.strftime("%d/%m/%Y")  # default: data_produzione
+
+
+def calcola_scadenza(prodotto, data_giorno):
+    if not prodotto:
+        return ""
+    giorni = int(prodotto.get("giorni_scadenza") or 0)
+    return (data_giorno + _dt.timedelta(days=giorni)).strftime("%d/%m/%Y")
+
+
+# ------------------------------------------------------------
 # BLOCCO: COMPILAZIONE FOGLIO MBC
 # ------------------------------------------------------------
 def genera_mbc(client, caseificio_id, data_giorno, output_path):
@@ -201,29 +307,29 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
     ws["M5"] = get_impostazione(client, caseificio_id, "ora_inizio_lavorazione", data_giorno)
     ws["U5"] = get_impostazione(client, caseificio_id, "ora_fine_lavorazione", data_giorno)
 
-    # --- Sezione Ricevimento ---
-    ws["D10"] = get_registro_giacenza_apertura(client, caseificio_id, data_giorno)  # TODO Registro
+    # --- Sezione Ricevimento (matrice materie prime: arrotondamento a intero) ---
+    ws["D10"] = r_int(get_registro_giacenza_apertura(client, caseificio_id, data_giorno))  # TODO Registro
     ws["E10"] = get_refrigerante_principale(client, caseificio_id)
 
     kg_allevamento, _ = get_conferimenti_per_categoria(
         client, caseificio_id, data_giorno, ["allevatore"], "bufala_dop"
     )
-    ws["D13"] = kg_allevamento
+    ws["D13"] = r_int(kg_allevamento)
 
     kg_raccoglitore, ddt_raccoglitore = get_conferimenti_per_categoria(
         client, caseificio_id, data_giorno, ["intermediario"], "bufala_dop"
     )
-    ws["D14"] = kg_raccoglitore
+    ws["D14"] = r_int(kg_raccoglitore)
     ws["E14"] = ", ".join(ddt_raccoglitore)
 
     # D15/D16: latte da caseifici DOP - una riga per ogni caseificio (max 2/giorno, confermato
     # dall'utente che le righe esistono gia' nel template, nessuna modifica di struttura)
     caseifici_dop = get_conferimenti_caseificio_dop_dettaglio(client, caseificio_id, data_giorno)
     if len(caseifici_dop) >= 1:
-        ws["D15"] = caseifici_dop[0]["kg"]
+        ws["D15"] = r_int(caseifici_dop[0]["kg"])
         ws["E15"] = caseifici_dop[0]["ddt"]
     if len(caseifici_dop) >= 2:
-        ws["D16"] = caseifici_dop[1]["kg"]
+        ws["D16"] = r_int(caseifici_dop[1]["kg"])
         ws["E16"] = caseifici_dop[1]["ddt"]
 
     # --- Sezione Lavorazione ---
@@ -235,9 +341,35 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
     ws["G14"] = get_impostazione(client, caseificio_id, "temperatura_latte", data_giorno)    # tempo maturazione
     ws["G16"] = 0  # Acidita' Primo Siero: per ora 0, in attesa del foglio Siero
     ws["G22"] = get_impostazione(client, caseificio_id, "cicli_lavorazione", data_giorno)
-    ws["K21"] = get_registro_trasformato_dop(client, caseificio_id, data_giorno)  # TODO Registro
-    ws["K25"] = get_registro_extra_dop(client, caseificio_id, data_giorno)        # TODO Registro
-    ws["K27"] = get_registro_giacenza_chiusura(client, caseificio_id, data_giorno)  # TODO Registro
+
+    kg_trasformato_dop = get_registro_trasformato_dop(client, caseificio_id, data_giorno)  # TODO Registro
+    ws["K21"] = r_int(kg_trasformato_dop)
+    ws["K25"] = r_int(get_registro_extra_dop(client, caseificio_id, data_giorno))          # TODO Registro
+    ws["K27"] = r_int(get_registro_giacenza_chiusura(client, caseificio_id, data_giorno))  # TODO Registro
+
+    # D21 (1L. Primo Siero Autoprodotto): sostituita la vecchia formula fissa "=K21*75%" del
+    # template con il siero REALE calcolato per differenza (latte trasformato - mozzarella
+    # prodotta), come deciso - "niente si crea e nulla si distrugge, tutto si trasforma".
+    kg_siero_dop = siero.siero_dop_prodotto_giorno(client, caseificio_id, data_giorno)
+    ws["D21"] = r_int(kg_siero_dop)
+    ws["D22"] = r_int(kg_siero_dop)  # Totale Primo Siero Autoprodotto (D22 = D21, un solo ciclo tracciato oggi)
+
+    # K20 (2I. Semilavorato idoneo a DOP lavorato a MBC DOP) e K24 (2N. Semilavorato idoneo a
+    # DOP destinato ad ALTRE lavorazioni e/o semilavorati): oggi il Registro traccia un unico
+    # totale di semilavorato_bufala trasformato, senza distinguere quanto va a MBC e quanto
+    # va altrove - l'intero valore e' quindi attribuito a K20 (uso primario, produzione MBC);
+    # K24 resta a 0 finche' questa distinzione non sara' tracciata nel Registro.
+    kg_semilavorato_dop = get_semilavorato_bufala_dop_giorno(client, caseificio_id, data_giorno)
+    ws["K20"] = r_int(kg_semilavorato_dop)
+    ws["K24"] = 0  # TODO: nessuna fonte dati ancora per la quota "destinata ad altre lavorazioni"
+
+    ws["K26"] = ""  # TODO: "ceduto a terzi" - manca ancora una fonte dati (kg latte DOP ceduto quel giorno);
+                     # lasciato vuoto invece della formula #REF! originale, in attesa di costruire questa parte
+
+    # W14 (Bilancio di massa latte): la formula originale del template "=+W10/K21" resta
+    # intatta (si ricalcola da sola in Excel una volta compilati W10 e K21) - qui si corregge
+    # solo il formato numerico a percentuale con 2 decimali, come richiesto.
+    ws["W14"].number_format = "0.00%"
 
     # --- Sezione Filatura ---
     ws["M9"] = get_impostazione(client, caseificio_id, "temperatura_acqua_filatura", data_giorno)
@@ -250,16 +382,52 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
         ws["M21"] = ""
         ws["M22"] = "X"
 
-    # --- Sezione Produzioni ---
-    # NOTA: intestazioni reali sono R9='Prodotto' (testo), V9='lotto n.', W9='Q.tà (kg)' -
-    # la versione precedente scriveva la quantita' in R10 (che vuole il NOME prodotto) e il
-    # lotto in W10 (che vuole la quantita'): erano scambiate, corretto qui.
-    kg_mozzarella = get_produzione_giorno(client, caseificio_id, data_giorno, "Mozzarella di Bufala Campana DOP")
+    # --- Sezione Produzioni (matrice prodotto: fino a 2 decimali, MAI arrotondata a intero) ---
+    # NOTA: intestazioni reali sono R9='Prodotto' (testo), V9='lotto n.', W9='Q.tà (kg)'.
+    prodotto_mozz, produzione_mozz = get_prodotto_e_produzione_giorno(
+        client, caseificio_id, data_giorno, "Mozzarella di Bufala Campana DOP", solo_dop=True
+    )
+    kg_mozz_totale = float((produzione_mozz or {}).get("kg_totale") or 0)
+    kg_mozz_diretta = float((produzione_mozz or {}).get("kg_diretta") or 0)
+    kg_mozz_terzi = float((produzione_mozz or {}).get("kg_terzi") or 0)
+    lotto_mozz = calcola_lotto(prodotto_mozz, data_giorno)
+
     ws["R10"] = "Mozzarella di Bufala Campana DOP"
-    ws["V10"] = f"{data_giorno.strftime('%Y%m%d')}-{numero_scheda(data_giorno)}"  # lotto
-    ws["W10"] = kg_mozzarella  # quantita' kg
-    ws["K26"] = ""  # TODO: "ceduto a terzi" - manca ancora una fonte dati (kg latte DOP ceduto quel giorno);
-                     # lasciato vuoto invece della formula #REF! originale, in attesa di costruire questa parte
+    ws["V10"] = lotto_mozz
+    ws["W10"] = r_prod(kg_mozz_totale)
+
+    # R11 "Confezionata" = vendita a terzi; R12 "Sfusa per punto vendita" = vendita diretta
+    # (mappatura confermata dall'utente). Sostituiscono le vecchie formule "=V10"/"=W10".
+    ws["V11"] = lotto_mozz
+    ws["W11"] = r_prod(kg_mozz_terzi)
+    ws["V12"] = lotto_mozz
+    ws["W12"] = r_prod(kg_mozz_diretta)
+
+    # W17 (Altri formaggi): altri prodotti DOP (diversi da mozzarella e ricotta) fatti con
+    # latte DOP quel giorno, sostituendo la vecchia formula rotta "=#REF!".
+    escludi_id = prodotto_mozz["id"] if prodotto_mozz else None
+    kg_altri_formaggi = get_altri_formaggi_dop_giorno(client, caseificio_id, data_giorno, escludi_id)
+    ws["W17"] = r_prod(kg_altri_formaggi)
+
+    # --- T20-W20 (Produzione RBC): riferimento incrociato al foglio RBC, SOLO se il
+    # caseificio ha effettivamente prodotto Ricotta di Bufala Campana DOP quel giorno.
+    # T20 (Pezzatura gr.) resta il valore fisso "250" gia' presente nel template.
+    kg_ricotta_dop, ricotta_dop = siero.get_ricotta_dop_giorno(client, caseificio_id, data_giorno)
+    if kg_ricotta_dop > 0:
+        ws["U20"] = r_int(kg_ricotta_dop * 4)  # Unita' n° = kg prodotti x 4
+        ws["V20"] = calcola_lotto(ricotta_dop, data_giorno)
+        ws["W20"] = calcola_scadenza(ricotta_dop, data_giorno)
+        # U25/U26/U27 (Idoneo): croce solo quando e' stata prodotta anche la RBC quel giorno.
+        ws["U25"] = "Idoneo X"
+        ws["U26"] = "Idoneo X"
+        ws["U27"] = "Idoneo X"
+    else:
+        ws["U20"] = ""
+        ws["V20"] = ""
+        ws["W20"] = ""
+        ws["U25"] = "Idoneo"
+        ws["U26"] = "Idoneo"
+        ws["U27"] = "Idoneo"
 
     wb.save(output_path)
     return output_path
