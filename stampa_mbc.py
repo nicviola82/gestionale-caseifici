@@ -289,12 +289,11 @@ def calcola_scadenza(prodotto, data_giorno):
 
 # ------------------------------------------------------------
 # BLOCCO: COMPILAZIONE FOGLIO MBC
+# _compila_mbc() scrive i dati di UN giorno su UN foglio worksheet gia' aperto - separata da
+# genera_mbc() (che gestisce apertura/salvataggio file) cosi' la stessa logica di compilazione
+# si puo' riusare foglio per foglio dentro un unico workbook multi-giorno (vedi genera_mbc_periodo).
 # ------------------------------------------------------------
-def genera_mbc(client, caseificio_id, data_giorno, output_path):
-    shutil.copy(TEMPLATE_PATH, output_path)
-    wb = openpyxl.load_workbook(output_path)
-    ws = wb[FOGLIO]
-
+def _compila_mbc(ws, client, caseificio_id, data_giorno):
     anagrafica = get_anagrafica(client, caseificio_id)
 
     # --- Intestazione ---
@@ -324,13 +323,15 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
 
     # D15/D16: latte da caseifici DOP - una riga per ogni caseificio (max 2/giorno, confermato
     # dall'utente che le righe esistono gia' nel template, nessuna modifica di struttura)
+    # NOTA: scritte sempre (con "" di fallback, non solo quando ci sono dati) - necessario perche'
+    # nella generazione multi-giorno (genera_mbc_periodo) lo stesso foglio viene duplicato da un
+    # giorno all'altro: senza il fallback, un valore del giorno precedente resterebbe visibile
+    # anche nel giorno successivo se quel giorno non ha caseifici DOP da cui acquistare.
     caseifici_dop = get_conferimenti_caseificio_dop_dettaglio(client, caseificio_id, data_giorno)
-    if len(caseifici_dop) >= 1:
-        ws["D15"] = r_int(caseifici_dop[0]["kg"])
-        ws["E15"] = caseifici_dop[0]["ddt"]
-    if len(caseifici_dop) >= 2:
-        ws["D16"] = r_int(caseifici_dop[1]["kg"])
-        ws["E16"] = caseifici_dop[1]["ddt"]
+    ws["D15"] = r_int(caseifici_dop[0]["kg"]) if len(caseifici_dop) >= 1 else ""
+    ws["E15"] = caseifici_dop[0]["ddt"] if len(caseifici_dop) >= 1 else ""
+    ws["D16"] = r_int(caseifici_dop[1]["kg"]) if len(caseifici_dop) >= 2 else ""
+    ws["E16"] = caseifici_dop[1]["ddt"] if len(caseifici_dop) >= 2 else ""
 
     # --- Sezione Lavorazione ---
     ws["G10"] = get_impostazione(client, caseificio_id, "temperatura_attivazione", data_giorno)
@@ -428,6 +429,34 @@ def genera_mbc(client, caseificio_id, data_giorno, output_path):
         ws["U25"] = "Idoneo"
         ws["U26"] = "Idoneo"
         ws["U27"] = "Idoneo"
+
+
+def genera_mbc(client, caseificio_id, data_giorno, output_path):
+    """Un solo giorno = un solo foglio MBC (comportamento originale, invariato)."""
+    shutil.copy(TEMPLATE_PATH, output_path)
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb[FOGLIO]
+    _compila_mbc(ws, client, caseificio_id, data_giorno)
+    wb.save(output_path)
+    return output_path
+
+
+def genera_mbc_periodo(client, caseificio_id, data_da, data_a, output_path):
+    """Un file MBC con UN FOGLIO PER GIORNO nell'intervallo [data_da, data_a] (inclusi).
+    File separato da RBC/tr, come richiesto - non contiene gli altri due fogli del template."""
+    shutil.copy(TEMPLATE_PATH, output_path)
+    wb = openpyxl.load_workbook(output_path)
+    for nome in list(wb.sheetnames):
+        if nome != FOGLIO:
+            del wb[nome]
+    ws_template = wb[FOGLIO]
+
+    n_giorni = (data_a - data_da).days + 1
+    for i in range(n_giorni):
+        giorno = data_da + _dt.timedelta(days=i)
+        ws = ws_template if i == 0 else wb.copy_worksheet(ws_template)
+        ws.title = giorno.strftime("%d-%m-%Y")  # nome foglio: niente "/" (non ammesso in Excel)
+        _compila_mbc(ws, client, caseificio_id, giorno)
 
     wb.save(output_path)
     return output_path
