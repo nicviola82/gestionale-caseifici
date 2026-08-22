@@ -14,6 +14,7 @@ import streamlit as st
 import datetime as _dt
 from db import get_client
 from auth import login_form, logout_button, is_owner
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Conferitori", layout="wide")
 if not login_form():
@@ -22,14 +23,15 @@ logout_button()
 client = get_client()
 
 st.title("Conferitori di latte")
+mostra_header_caseificio()
 
 caseificio_id = st.session_state.get("caseificio_id")
 if not caseificio_id:
     st.info("Seleziona un caseificio dalla pagina principale.")
     st.stop()
 
-TIPI_LATTE = ["bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino", "cagliata_bufala",
-              "cagliata_vaccino", "bufala_congelato", "vaccino_congelato", "altro"]
+TIPI_LATTE = ["bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino",
+              "bufala_congelato", "vaccino_congelato", "altro"]
 
 # ------------------------------------------------------------
 # BLOCCO: NUOVO CONFERITORE
