@@ -310,6 +310,56 @@ for d in date_periodo:
 
 df = pd.DataFrame(righe)
 
+# ------------------------------------------------------------
+# BLOCCO: NASCONDI COLONNE/FAMIGLIE A ZERO NEL PERIODO
+# Se un'intera famiglia di colonne (es. tutto il vaccino, o un singolo prodotto)
+# risulta a zero in TUTTO il periodo selezionato, non ha senso mostrarla: si
+# nasconde solo per QUESTA vista, i dati restano intatti nel database e
+# riappaiono da soli se in quel periodo torna a esserci attività.
+# ------------------------------------------------------------
+def famiglia_azzerata(cols):
+    numeriche = [c for c in cols if c in df.columns and not c.startswith("R.")]
+    if not numeriche:
+        return False
+    return all(pd.to_numeric(df[c], errors="coerce").fillna(0).abs().sum() == 0 for c in numeriche)
+
+famiglie = {
+    "MBC": [c for c in df.columns if c.startswith("Ref.MBC") or c.startswith("Rit.MBC") or c.startswith("Tr.MBC")
+            or c == "Mozz.MBC" or c == "R.MBC" or c.startswith("MBC.")],
+    "Buf": [c for c in df.columns if c in ("Ref.Buf", "Rit.Buf", "Tr.Buf", "R.Buf", "Buf.Cong")],
+    "Vacc": [c for c in df.columns if c in ("Ref.Vacc", "Rit.Vacc", "Tr.Vacc", "R.Vacc", "VaccVend")],
+    "SemB": [c for c in df.columns if c in ("Ref.SemB", "Rit.SemB", "Tr.SemB")],
+    "SemV": [c for c in df.columns if c in ("Ref.SemV", "Rit.SemV", "Tr.SemV")],
+    "CongVend": [c for c in df.columns if c == "CongVend"],
+}
+colonne_da_nascondere = set()
+for nome_fam, cols in famiglie.items():
+    if cols and famiglia_azzerata(cols):
+        colonne_da_nascondere |= set(cols)
+
+# prodotti singoli: stesso principio, un prodotto alla volta (gruppo Tot/nD/dop o colonna unica)
+prodotti_gruppi = {}
+for p in prodotti_dop_altri:
+    base = f"D.{p['nome'][:6]}"
+    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop"]
+for p in prodotti_declassati:
+    base = f"Dec.{p['nome'][:6]}"
+    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop"]
+for p in prodotti_mista:    prodotti_gruppi[f"Mis.{p['nome'][:6]}"] = [f"Mis.{p['nome'][:6]}"]
+for p in prodotti_vaccina:  prodotti_gruppi[f"Vac.{p['nome'][:6]}"] = [f"Vac.{p['nome'][:6]}"]
+for p in prodotti_cong:     prodotti_gruppi[f"Con.{p['nome'][:6]}"] = [f"Con.{p['nome'][:6]}"]
+for p in prodotti_cagliata: prodotti_gruppi[f"Cag.{p['nome'][:6]}"] = [f"Cag.{p['nome'][:6]}"]
+
+for base, cols in prodotti_gruppi.items():
+    cols_presenti = [c for c in cols if c in df.columns]
+    if cols_presenti and famiglia_azzerata(cols_presenti):
+        colonne_da_nascondere |= set(cols_presenti)
+
+df_completo = df  # tenuto per l'esportazione CSV (che include SEMPRE tutte le colonne, anche quelle nascoste qui)
+if colonne_da_nascondere:
+    df = df.drop(columns=list(colonne_da_nascondere))
+    st.caption(f"({len(colonne_da_nascondere)} colonne nascoste perché a zero in tutto il periodo selezionato — i dati non sono persi, riappaiono da sole se tornano ad esserci valori)")
+
 # colonne editabili (tutto tranne Refrigerato, Ritirato, Resa)
 col_readonly = {"Data"}
 col_readonly |= {c for c in df.columns if c.startswith("Ref.") or c.startswith("Rit.") or c in ("R.MBC","R.Buf","R.Vacc")}
@@ -365,16 +415,25 @@ if is_owner():
 
 # ------------------------------------------------------------
 # BLOCCO: IMPORTA / ESPORTA
+# CORREZIONE: il CSV va generato con separatore ";" e codifica UTF-8 con BOM
+# (utf-8-sig), altrimenti Excel in italiano lo apre male (tutto in una sola
+# colonna, sembra "non funzionare" anche se il file è tecnicamente valido).
 # ------------------------------------------------------------
 col_exp1, col_exp2 = st.columns(2)
 with col_exp1:
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Esporta CSV", data=csv_bytes, file_name=f"registro_{periodo_inizio}_{periodo_fine}.csv", mime="text/csv")
+    try:
+        csv_bytes = df_completo.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Esporta CSV (compatibile Excel)", data=csv_bytes,
+            file_name=f"registro_{periodo_inizio}_{periodo_fine}.csv", mime="text/csv",
+        )
+    except Exception as e:
+        st.error(f"Errore nella generazione del CSV: {e}")
 with col_exp2:
     file_import = st.file_uploader("⬆️ Importa CSV", type=["csv"], key="import_registro")
     if file_import is not None and is_owner():
         try:
-            df_import = pd.read_csv(file_import)
+            df_import = pd.read_csv(file_import, sep=";", decimal=",")
             st.dataframe(df_import, width="stretch")
             if st.button("Conferma importazione"):
                 st.warning("L'importazione sovrascrive i valori Trasformato/Venduto per le date corrispondenti presenti nel file. Assicurati che le colonne coincidano con quelle della tabella sopra.")
