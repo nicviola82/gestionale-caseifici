@@ -39,7 +39,7 @@ date_periodo = [periodo_inizio + _dt.timedelta(days=i) for i in range(n_giorni)]
 # ------------------------------------------------------------
 conferitori_tutti = (
     client.table("conferitori")
-    .select("id, conferitori_tipi_latte(tipo_latte)")
+    .select("id, tipo, conferitori_tipi_latte(tipo_latte)")
     .eq("caseificio_id", caseificio_id)
     .execute()
     .data
@@ -48,6 +48,10 @@ tipo_per_conferitore = {
     c["id"]: [t["tipo_latte"] for t in c.get("conferitori_tipi_latte", [])]
     for c in conferitori_tutti
 }
+# conferitori di tipo "congelatore": il RITIRO del latte da questi conta come Ritirato
+# Bufala normale (stesso bucket, niente categoria a parte) - serve pero' tenerne traccia
+# a parte per sapere quanto della giacenza bufala "di ritorno dal congelatore".
+congelatore_ids = {c["id"] for c in conferitori_tutti if c["tipo"] == "congelatore"}
 tutti_tipi = {t for tipi in tipo_per_conferitore.values() for t in tipi}
 
 usa_dop = "bufala_dop" in tutti_tipi
@@ -137,6 +141,9 @@ for v in venduto_storia:
 
 congelato_map = {}
 raccolto = {}
+raccolto_da_congelatore_buf = {}  # sotto-quota di raccolto[("bufala", data)] che viene da un
+                                    # conferitore di tipo "congelatore" (ritiro di latte tornato
+                                    # dal congelamento) - usata per il calcolo proporzionale sotto
 for cf in conferimenti_tutti:
     tipi = tipo_per_conferitore.get(cf["conferitore_id"], [])
     kg = float(cf.get("kg") or 0)
@@ -144,9 +151,15 @@ for cf in conferimenti_tutti:
     for t in tipi:
         if t in ("bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino"):
             raccolto[(t, cf["data"])] = raccolto.get((t, cf["data"]), 0) + kg
+            if t == "bufala" and cf["conferitore_id"] in congelatore_ids:
+                raccolto_da_congelatore_buf[cf["data"]] = raccolto_da_congelatore_buf.get(cf["data"], 0) + kg
 for m in movimenti_tutti:
     if m["tipo"] == "scongelamento":
+        # NOTA: dati storici da prima della correzione (22/08) - il ritiro dal congelatore ora si
+        # inserisce nella normale griglia conferimenti di Dati Inseriti, non più qui - questo blocco
+        # resta solo per non perdere/rompere eventuali movimenti già registrati in passato.
         raccolto[("bufala", m["data"])] = raccolto.get(("bufala", m["data"]), 0) + float(m["kg"])
+        raccolto_da_congelatore_buf[m["data"]] = raccolto_da_congelatore_buf.get(m["data"], 0) + float(m["kg"])
     elif m["tipo"] == "congelamento":
         orig = m.get("origine") or "bufala"
         congelato_map[(orig, m["data"])] = congelato_map.get((orig, m["data"]), 0) + float(m["kg"])
@@ -208,6 +221,27 @@ for d in tutte_le_date:
         giacenza_per_tipo[t] = giacenza_per_tipo[t] + entrata - uscita
 
 # ------------------------------------------------------------
+# BLOCCO: QUOTA "EX-CONGELATO" DENTRO LA GIACENZA BUFALA
+# Non teniamo lotti separati (un'unica giacenza cumulativa di bufala), quindi la
+# quota di provenienza congelata si segue con una sotto-giacenza PROPORZIONALE:
+# entra quando c'è un ritiro dal congelatore, esce nella stessa proporzione in cui
+# esce il resto della giacenza bufala quel giorno (trasformato + venduto + congelato).
+# Serve per rispondere a "quanto del Trasformato Bufala di oggi viene dal congelato".
+# ------------------------------------------------------------
+giacenza_congelata_buf = 0.0
+giacenza_congelata_apertura = {}
+for d in tutte_le_date:
+    giacenza_congelata_apertura[d] = giacenza_congelata_buf
+    entrata_c = raccolto_da_congelatore_buf.get(d, 0)
+    giac_tot_apertura = giacenza_per_giorno.get(("bufala", d), 0)
+    uscita_tot = (trasformato_map.get(("bufala", d), 0)
+                  + venduto_map.get(("bufala", d), 0)
+                  + congelato_map.get(("bufala", d), 0))
+    quota = (giacenza_congelata_buf / giac_tot_apertura) if giac_tot_apertura > 0 else 0.0
+    uscita_c = uscita_tot * quota
+    giacenza_congelata_buf = giacenza_congelata_buf + entrata_c - uscita_c
+
+# ------------------------------------------------------------
 # BLOCCO: CARICA DATI PERIODO PER TABELLA EDITABILE
 # ------------------------------------------------------------
 trasf_periodo = {(t["tipo_latte"], t["data"]): float(t["kg"] or 0) for t in (
@@ -265,7 +299,14 @@ for d in date_periodo:
 
     # TRASFORMATO (editabile — solo DOP per MBC, no latte non-DOP per prodotti DOP)
     if usa_dop:  riga["Tr.MBC"]   = trasf_periodo.get(("bufala_dop", ds), 0.0)
-    if usa_buf:  riga["Tr.Buf"]   = trasf_periodo.get(("bufala", ds), 0.0)
+    if usa_buf:
+        tr_buf_oggi = trasf_periodo.get(("bufala", ds), 0.0)
+        riga["Tr.Buf"]   = tr_buf_oggi
+        # quota "di cui da latte congelato" (calcolo proporzionale sulla giacenza di apertura
+        # del giorno, come da conferma dell'utente - non teniamo lotti separati per FIFO)
+        giac_tot_ap = giacenza_per_giorno.get(("bufala", ds), 0)
+        quota_cong = (giacenza_congelata_apertura.get(ds, 0) / giac_tot_ap) if giac_tot_ap > 0 else 0.0
+        riga["Tr.BufCong"] = round(tr_buf_oggi * quota_cong, 1)
     if usa_vacc: riga["Tr.Vacc"]  = trasf_periodo.get(("vaccino", ds), 0.0)
     if usa_sem_buf:  riga["Tr.SemB"]  = trasf_periodo.get(("semilavorato_bufala", ds), 0.0)
     if usa_sem_vacc: riga["Tr.SemV"]  = trasf_periodo.get(("semilavorato_vaccino", ds), 0.0)
@@ -326,7 +367,7 @@ def famiglia_azzerata(cols):
 famiglie = {
     "MBC": [c for c in df.columns if c.startswith("Ref.MBC") or c.startswith("Rit.MBC") or c.startswith("Tr.MBC")
             or c == "Mozz.MBC" or c == "R.MBC" or c.startswith("MBC.")],
-    "Buf": [c for c in df.columns if c in ("Ref.Buf", "Rit.Buf", "Tr.Buf", "R.Buf", "Buf.Cong")],
+    "Buf": [c for c in df.columns if c in ("Ref.Buf", "Rit.Buf", "Tr.Buf", "R.Buf", "Buf.Cong", "Tr.BufCong")],
     "Vacc": [c for c in df.columns if c in ("Ref.Vacc", "Rit.Vacc", "Tr.Vacc", "R.Vacc", "VaccVend")],
     "SemB": [c for c in df.columns if c in ("Ref.SemB", "Rit.SemB", "Tr.SemB")],
     "SemV": [c for c in df.columns if c in ("Ref.SemV", "Rit.SemV", "Tr.SemV")],
@@ -365,12 +406,14 @@ col_readonly = {"Data"}
 col_readonly |= {c for c in df.columns if c.startswith("Ref.") or c.startswith("Rit.") or c in ("R.MBC","R.Buf","R.Vacc")}
 col_readonly |= {c for c in df.columns if c == "Mozz.MBC" or c.startswith("Mis.") or c.startswith("Vac.") or c.startswith("Con.") or c.startswith("Cag.")}
 col_readonly |= {c for c in df.columns if c.endswith("Tot") or c.endswith("dop")}
+col_readonly |= {c for c in df.columns if c == "Tr.BufCong"}
 
 column_config = {"Data": st.column_config.TextColumn("Data", disabled=True, width=60)}
 for col in df.columns:
     if col == "Data": continue
     disabled = col in col_readonly
-    column_config[col] = st.column_config.NumberColumn(col, disabled=disabled, min_value=0.0 if not disabled else None, step=1.0 if not disabled else None, width=70) if not col.startswith("R.") else st.column_config.TextColumn(col, disabled=True, width=65)
+    etichetta = "Tr.Buf\n(di cui congelato)" if col == "Tr.BufCong" else col
+    column_config[col] = st.column_config.NumberColumn(etichetta, disabled=disabled, min_value=0.0 if not disabled else None, step=1.0 if not disabled else None, width=70) if not col.startswith("R.") else st.column_config.TextColumn(col, disabled=True, width=65)
 
 df_mod = st.data_editor(df, column_config=column_config, hide_index=True, width="stretch", key="griglia_registro")
 
