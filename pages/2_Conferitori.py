@@ -88,6 +88,46 @@ conferitori = (
     .data
 )
 
+# Stati sanitari e documenti di TUTTI i conferitori di questo caseificio, raggruppati per
+# conferitore - usati sia per la lista dentro ogni popover "Stati sanitari" sia per il
+# pallino di stato accanto al nome, sia per il riepilogo "Avvisi scadenze" più sotto
+# (una sola query invece di ripeterla più volte).
+oggi = _dt.date.today()
+
+sanitari_grezzi = client.table("stati_sanitari").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
+docs_grezzi = client.table("documenti_conferitori").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
+
+sanitari_by_conf = {}
+for s in sanitari_grezzi:
+    conf = s.get("conferitori") or {}
+    if conf.get("caseificio_id") == caseificio_id:
+        sanitari_by_conf.setdefault(s["conferitore_id"], []).append(s)
+
+docs_by_conf = {}
+for d in docs_grezzi:
+    conf = d.get("conferitori") or {}
+    if conf.get("caseificio_id") == caseificio_id:
+        docs_by_conf.setdefault(d["conferitore_id"], []).append(d)
+
+
+def stato_scadenza_badge(record_list):
+    """Ritorna un'emoji che riassume lo stato peggiore tra tutti i record di un conferitore:
+    nessun dato caricato / tutto valido / in scadenza (entro 15 giorni) / scaduto."""
+    if not record_list:
+        return "⚪ nessun dato"
+    peggiore = "ok"
+    for r in record_list:
+        if not r.get("data_scadenza"):
+            continue
+        sc = _dt.date.fromisoformat(r["data_scadenza"])
+        if sc < oggi:
+            peggiore = "scaduto"
+            break
+        elif (sc - oggi).days <= 15 and peggiore != "scaduto":
+            peggiore = "in_scadenza"
+    return {"ok": "🟢 in regola", "in_scadenza": "🟠 in scadenza", "scaduto": "🔴 scaduto"}[peggiore]
+
+
 if not conferitori:
     st.info("Nessun conferitore inserito.")
 else:
@@ -109,6 +149,8 @@ else:
                 extra.append(f"Cod. stalla: {c['codice_stalla']}")
             if c.get("bollo_ce"):
                 extra.append(f"Bollo CE: {c['bollo_ce']}")
+            record_conferitore = sanitari_by_conf.get(c["id"], []) + docs_by_conf.get(c["id"], [])
+            extra.append(stato_scadenza_badge(record_conferitore))
             if extra:
                 st.caption(" · ".join(extra))
 
@@ -145,6 +187,36 @@ else:
         with col4:
             if is_owner():
                 with st.popover("🩺 Stati sanitari"):
+                    # ---- Elenco di quanto già caricato per QUESTO conferitore ----
+                    # (prima mancava del tutto: si poteva solo aggiungere, mai vedere cosa
+                    # c'era già - motivo per cui sembrava che "non apparisse da nessuna parte")
+                    esistenti = sanitari_by_conf.get(c["id"], []) if c["tipo"] == "allevatore" else docs_by_conf.get(c["id"], [])
+                    if esistenti:
+                        st.caption("Già caricati:")
+                        for rec in sorted(esistenti, key=lambda r: r.get("data_scadenza") or "", reverse=True):
+                            sc = rec.get("data_scadenza")
+                            sc_fmt = _dt.date.fromisoformat(sc).strftime("%d/%m/%Y") if sc else "-"
+                            etichetta_tipo = rec.get("tipo", "")
+                            valore_txt = f" (valore: {rec['valore']})" if rec.get("valore") not in (None, 0, 0.0) else ""
+                            riga_col1, riga_col2 = st.columns([5, 1])
+                            with riga_col1:
+                                badge = ""
+                                if sc:
+                                    sc_date = _dt.date.fromisoformat(sc)
+                                    if sc_date < oggi:
+                                        badge = "🔴 "
+                                    elif (sc_date - oggi).days <= 15:
+                                        badge = "🟠 "
+                                st.write(f"{badge}{etichetta_tipo}{valore_txt} — scade {sc_fmt}")
+                            with riga_col2:
+                                tabella_rec = "stati_sanitari" if c["tipo"] == "allevatore" else "documenti_conferitori"
+                                if st.button("🗑️", key=f"delrec_{tabella_rec}_{rec['id']}"):
+                                    client.table(tabella_rec).delete().eq("id", rec["id"]).execute()
+                                    st.rerun()
+                        st.divider()
+                    else:
+                        st.caption("Nessun dato caricato ancora.")
+
                     if c["tipo"] == "allevatore":
                         with st.form(f"sanitario_{c['id']}"):
                             tipo_es = st.selectbox("Tipo esame", ["brucellosi", "tubercolosi", "leucosi",
@@ -186,39 +258,41 @@ else:
 
 # ------------------------------------------------------------
 # BLOCCO: AVVISI SCADENZE
+# Riusa gli stessi dati già recuperati sopra (sanitari_by_conf/docs_by_conf),
+# senza ripetere le stesse query due volte.
 # ------------------------------------------------------------
 st.divider()
 st.subheader("⚠️ Avvisi scadenze")
-oggi = _dt.date.today()
-sanitari = client.table("stati_sanitari").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
-docs = client.table("documenti_conferitori").select("*, conferitori(ragione_sociale, caseificio_id)").execute().data
 
 avvisi = []
-for s in sanitari:
-    conf = s.get("conferitori") or {}
-    if conf.get("caseificio_id") != caseificio_id or not s.get("data_scadenza"):
-        continue
-    sc = _dt.date.fromisoformat(s["data_scadenza"])
-    if sc < oggi:
-        avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {s['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
-    elif (sc - oggi).days <= 15:
-        avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {s['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
-for d in docs:
-    conf = d.get("conferitori") or {}
-    if conf.get("caseificio_id") != caseificio_id or not d.get("data_scadenza"):
-        continue
-    sc = _dt.date.fromisoformat(d["data_scadenza"])
-    if sc < oggi:
-        avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {d['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
-    elif (sc - oggi).days <= 15:
-        avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {d['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
+for lista in sanitari_by_conf.values():
+    for s in lista:
+        conf = s.get("conferitori") or {}
+        if not s.get("data_scadenza"):
+            continue
+        sc = _dt.date.fromisoformat(s["data_scadenza"])
+        if sc < oggi:
+            avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {s['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
+        elif (sc - oggi).days <= 15:
+            avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {s['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
+for lista in docs_by_conf.values():
+    for d in lista:
+        conf = d.get("conferitori") or {}
+        if not d.get("data_scadenza"):
+            continue
+        sc = _dt.date.fromisoformat(d["data_scadenza"])
+        if sc < oggi:
+            avvisi.append(f"🔴 {conf.get('ragione_sociale')}: {d['tipo']} SCADUTO il {sc.strftime('%d/%m/%Y')}")
+        elif (sc - oggi).days <= 15:
+            avvisi.append(f"🟠 {conf.get('ragione_sociale')}: {d['tipo']} in scadenza il {sc.strftime('%d/%m/%Y')}")
 
 if avvisi:
     for a in avvisi:
         st.write(a)
 else:
     st.write("Nessuna scadenza imminente.")
-    st.divider()
+
+st.divider()
 
 # ------------------------------------------------------------
 # BLOCCO: VENDITA / CESSIONE LATTE
