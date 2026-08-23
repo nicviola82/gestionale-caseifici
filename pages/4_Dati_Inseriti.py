@@ -76,25 +76,34 @@ mappa_esistenti = {(e["conferitore_id"], e["data"]): e for e in esistenti}
 
 # ------------------------------------------------------------
 # BLOCCO: COSTRUZIONE GRIGLIA
+# CORREZIONE: intestazione colonna ora usa il codice abbreviativo del conferitore
+# se presente (altrimenti la ragione sociale), come richiesto - prima usava sempre
+# la ragione sociale per intero. Le chiavi interne delle colonne usano l'id del
+# conferitore (mai il nome), per evitare collisioni se due conferitori hanno lo
+# stesso nome o la stessa sigla. Ordine sotto-colonne: DDT poi KG (confermato).
 # ------------------------------------------------------------
 st.subheader("Griglia conferimenti")
 st.caption("Modifica le celle direttamente. Puoi copiare/incollare piu' valori insieme (anche da Excel). Ricorda di premere 'Salva conferimenti' in fondo.")
+
+def etichetta_conferitore(c):
+    return c.get("codice_abbreviativo") or c["ragione_sociale"]
 
 righe = []
 for d in date_periodo:
     riga = {"Data": d.strftime("%d/%m/%Y")}
     for c in conferitori:
         rec = mappa_esistenti.get((c["id"], str(d)))
-        riga[f"{c['ragione_sociale']} - DDT"] = rec["ddt"] if rec else ""
-        riga[f"{c['ragione_sociale']} - KG"] = float(rec["kg"]) if rec and rec.get("kg") is not None else 0.0
+        riga[f"c{c['id']}_ddt"] = rec["ddt"] if rec else ""
+        riga[f"c{c['id']}_kg"] = float(rec["kg"]) if rec and rec.get("kg") is not None else 0.0
     righe.append(riga)
 
 df = pd.DataFrame(righe)
 
 column_config = {"Data": st.column_config.TextColumn("Data", disabled=True)}
 for c in conferitori:
-    column_config[f"{c['ragione_sociale']} - DDT"] = st.column_config.TextColumn(f"{c['ragione_sociale']}\nDDT")
-    column_config[f"{c['ragione_sociale']} - KG"] = st.column_config.NumberColumn(f"{c['ragione_sociale']}\nKG", min_value=0.0, step=1.0)
+    lbl = etichetta_conferitore(c)
+    column_config[f"c{c['id']}_ddt"] = st.column_config.TextColumn(f"{lbl}\nDDT")
+    column_config[f"c{c['id']}_kg"] = st.column_config.NumberColumn(f"{lbl}\nKG", min_value=0.0, step=1.0)
 
 df_modificato = st.data_editor(
     df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_conferimenti"
@@ -105,8 +114,8 @@ if is_owner():
         records = []
         for i, d in enumerate(date_periodo):
             for c in conferitori:
-                ddt = df_modificato.loc[i, f"{c['ragione_sociale']} - DDT"]
-                kg = df_modificato.loc[i, f"{c['ragione_sociale']} - KG"]
+                ddt = df_modificato.loc[i, f"c{c['id']}_ddt"]
+                kg = df_modificato.loc[i, f"c{c['id']}_kg"]
                 if (ddt and str(ddt).strip()) or (kg and float(kg) > 0):
                     records.append({
                         "caseificio_id": caseificio_id,
@@ -121,6 +130,61 @@ if is_owner():
             st.rerun()
         else:
             st.info("Nessun dato da salvare.")
+
+# ------------------------------------------------------------
+# BLOCCO: STAMPA / ESPORTA GRIGLIA (Excel-compatibile)
+# Streamlit non genera PDF di stampa nativi: l'export CSV apribile subito in
+# Excel (e stampabile da lì) è la soluzione più affidabile e coerente con il
+# resto del programma - stesso formato usato in Registro.
+# ------------------------------------------------------------
+col_stampa1, col_stampa2 = st.columns(2)
+with col_stampa1:
+    df_export = df.rename(columns={
+        **{f"c{c['id']}_ddt": f"{etichetta_conferitore(c)} - DDT" for c in conferitori},
+        **{f"c{c['id']}_kg": f"{etichetta_conferitore(c)} - KG" for c in conferitori},
+    })
+    try:
+        csv_bytes = df_export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        st.download_button(
+            "🖨️ Esporta/Stampa griglia (CSV compatibile Excel)", data=csv_bytes,
+            file_name=f"dati_inseriti_{periodo_inizio}_{periodo_fine}.csv", mime="text/csv",
+        )
+    except Exception as e:
+        st.error(f"Errore nella generazione del CSV: {e}")
+with col_stampa2:
+    file_import = st.file_uploader("⬆️ Importa CSV", type=["csv"], key="import_dati_inseriti")
+    if file_import is not None and is_owner():
+        try:
+            df_import = pd.read_csv(file_import, sep=";", decimal=",")
+            st.dataframe(df_import, width="stretch")
+            if st.button("Conferma importazione conferimenti"):
+                importati = 0
+                for i in range(len(df_import)):
+                    ds_match = None
+                    for d in date_periodo:
+                        if d.strftime("%d/%m/%Y") == str(df_import.iloc[i]["Data"]):
+                            ds_match = str(d)
+                            break
+                    if not ds_match:
+                        continue
+                    for c in conferitori:
+                        col_ddt = f"{etichetta_conferitore(c)} - DDT"
+                        col_kg = f"{etichetta_conferitore(c)} - KG"
+                        if col_kg not in df_import.columns:
+                            continue
+                        ddt_val = df_import.iloc[i].get(col_ddt)
+                        kg_val = df_import.iloc[i].get(col_kg)
+                        if (ddt_val and str(ddt_val).strip() and str(ddt_val) != "nan") or (kg_val and float(kg_val) > 0):
+                            client.table("conferimenti").upsert({
+                                "caseificio_id": caseificio_id, "conferitore_id": c["id"], "data": ds_match,
+                                "ddt": str(ddt_val) if ddt_val and str(ddt_val) != "nan" else None,
+                                "kg": float(kg_val) if kg_val else 0.0,
+                            }, on_conflict="conferitore_id,data").execute()
+                            importati += 1
+                st.success(f"Importazione completata: {importati} conferimenti aggiornati.")
+                st.rerun()
+        except Exception as e:
+            st.error(f"Errore nella lettura del file: {e}")
 
 st.divider()
 
@@ -248,6 +312,65 @@ else:
                         client.table("destinatari_vendita").delete().eq("id", v["id"]).execute()
                         st.success("Eliminato.")
                         st.rerun()
+
+# ------------------------------------------------------------
+# BLOCCO: VENDITE DI LATTE AI DESTINATARI
+# Prima si potevano creare i destinatari ma non registrare le vendite verso di
+# loro - aggiunta qui la registrazione (data, tipo di latte, kg) per ciascun
+# destinatario attivo, più l'elenco di quanto già registrato nel periodo.
+# NOTA TECNICA: richiede la tabella "vendite_latte_destinatari" in Supabase
+# (colonne: id, caseificio_id, destinatario_id, tipo_latte, data, kg, ddt) -
+# se non esiste ancora, va creata con l'SQL fornito a parte.
+# ------------------------------------------------------------
+st.divider()
+st.subheader("📤 Vendite di latte ai destinatari")
+
+destinatari_attivi = [d for d in destinatari if d["attivo"]]
+if not destinatari_attivi:
+    st.info("Nessun destinatario attivo. Aggiungine uno nella sezione sopra prima di registrare una vendita.")
+elif is_owner():
+    with st.form("nuova_vendita_latte"):
+        vl_destinatario_nome = st.selectbox("Destinatario", [d["ragione_sociale"] for d in destinatari_attivi], key="vl_dest")
+        vl_tipo_latte = st.selectbox("Tipo di latte venduto", list(TIPI_LATTE_LABEL.keys()), format_func=lambda t: TIPI_LATTE_LABEL[t], key="vl_tipo")
+        vl_data = st.date_input("Data vendita", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine, key="vl_data", format="DD/MM/YYYY")
+        vl_kg = st.number_input("KG venduti", min_value=0.0, step=1.0, key="vl_kg")
+        vl_ddt = st.text_input("N. DDT (facoltativo)", key="vl_ddt")
+        if st.form_submit_button("Registra vendita"):
+            vl_dest_id = next(d["id"] for d in destinatari_attivi if d["ragione_sociale"] == vl_destinatario_nome)
+            try:
+                client.table("vendite_latte_destinatari").insert({
+                    "caseificio_id": caseificio_id, "destinatario_id": vl_dest_id,
+                    "tipo_latte": vl_tipo_latte, "data": str(vl_data), "kg": vl_kg,
+                    "ddt": vl_ddt or None,
+                }).execute()
+                st.success("Vendita registrata.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Impossibile salvare: la tabella 'vendite_latte_destinatari' potrebbe non esistere ancora su Supabase. Dettaglio: {e}")
+
+try:
+    vendite_latte_periodo = (
+        client.table("vendite_latte_destinatari")
+        .select("*, destinatari_vendita(ragione_sociale)")
+        .eq("caseificio_id", caseificio_id)
+        .gte("data", str(periodo_inizio))
+        .lte("data", str(periodo_fine))
+        .order("data")
+        .execute()
+        .data
+    )
+    if vendite_latte_periodo:
+        st.table([{
+            "Data": _dt.date.fromisoformat(v["data"]).strftime("%d/%m/%Y"),
+            "Destinatario": (v.get("destinatari_vendita") or {}).get("ragione_sociale", "-"),
+            "Tipo latte": TIPI_LATTE_LABEL.get(v["tipo_latte"], v["tipo_latte"]),
+            "KG": v["kg"],
+            "DDT": v.get("ddt") or "-",
+        } for v in vendite_latte_periodo])
+    else:
+        st.write("Nessuna vendita di latte registrata in questo periodo.")
+except Exception:
+    st.caption("(Elenco vendite non disponibile: la tabella 'vendite_latte_destinatari' potrebbe non esistere ancora su Supabase.)")
 
 # ------------------------------------------------------------
 # BLOCCO: TOTALE PER CONFERITORE NEL PERIODO
