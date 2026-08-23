@@ -40,6 +40,13 @@ TIPI_LOTTO_LABEL = {
     "giuliano": "Calendario giuliano (1-366)",
 }
 
+TIPI_VENDITA = ["diretta", "terzi", "entrambe"]
+TIPI_VENDITA_LABEL = {
+    "diretta": "Solo vendita diretta",
+    "terzi": "Solo vendita a terzi",
+    "entrambe": "Entrambe (diretta + terzi)",
+}
+
 # ------------------------------------------------------------
 # BLOCCO: NUOVO PRODOTTO
 # ------------------------------------------------------------
@@ -56,6 +63,11 @@ if is_owner():
             if "ricotta" in nome.lower():
                 resa = st.number_input("Resa automatica (% del latte lavorato)", min_value=0.0, max_value=100.0, value=3.5)
             mostra_produzioni = st.checkbox("Mostra questo prodotto nello schema Produzioni", value=True)
+            tipo_vendita = st.radio(
+                "Tipo di vendita", TIPI_VENDITA, format_func=lambda x: TIPI_VENDITA_LABEL[x],
+                index=2, horizontal=True,
+                help="Se 'Solo diretta' o 'Solo terzi', in Produzioni non verrà più chiesto di suddividere - il totale va tutto lì.",
+            )
             consente_piu_terzi = st.checkbox("Consenti piu' destinatari per la vendita a terzi (es. mozzarella)")
             stabilisce_resa = st.checkbox("Questo prodotto STABILISCE LA RESA del giorno per la sua categoria di latte (es. la Mozzarella di Bufala Campana DOP)")
 
@@ -69,6 +81,7 @@ if is_owner():
                     "giorni_scadenza": int(giorni_scadenza),
                     "resa_automatica_percent": resa,
                     "mostra_in_produzioni": mostra_produzioni,
+                    "tipo_vendita": tipo_vendita,
                     "consente_piu_terzi": consente_piu_terzi,
                     "stabilisce_resa": stabilisce_resa,
                 }).execute()
@@ -109,6 +122,7 @@ else:
                 extra.append("nascosto da Produzioni")
             if p.get("consente_piu_terzi"):
                 extra.append("multi-terzi")
+            extra.append(TIPI_VENDITA_LABEL.get(p.get("tipo_vendita") or "entrambe", "Entrambe"))
             extra_txt = f" [{', '.join(extra)}]" if extra else ""
             st.write(f"**{p['nome']}{dop_lbl}** — lotto: {lotto_lbl}, scadenza: +{p.get('giorni_scadenza') or 0} giorni"
                      + (f", resa automatica {p['resa_automatica_percent']}%" if p.get("resa_automatica_percent") else "")
@@ -134,6 +148,10 @@ else:
                         m_mostra_produzioni = st.checkbox(
                             "Mostra nello schema Produzioni", value=p.get("mostra_in_produzioni", True), key=f"m_mostra_{p['id']}",
                         )
+                        m_tipo_vendita = st.radio(
+                            "Tipo di vendita", TIPI_VENDITA, format_func=lambda x: TIPI_VENDITA_LABEL[x],
+                            index=TIPI_VENDITA.index(p.get("tipo_vendita") or "entrambe"), key=f"m_venditatipo_{p['id']}", horizontal=True,
+                        )
                         m_consente_piu_terzi = st.checkbox(
                             "Consenti piu' destinatari per la vendita a terzi", value=p.get("consente_piu_terzi", False), key=f"m_multi_{p['id']}",
                         )
@@ -148,6 +166,7 @@ else:
                                 "giorni_scadenza": int(m_giorni_scadenza),
                                 "resa_automatica_percent": m_resa if m_resa > 0 else None,
                                 "mostra_in_produzioni": m_mostra_produzioni,
+                                "tipo_vendita": m_tipo_vendita,
                                 "consente_piu_terzi": m_consente_piu_terzi,
                                 "stabilisce_resa": m_stabilisce_resa,
                             }).eq("id", p["id"]).execute()
