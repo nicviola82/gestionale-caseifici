@@ -104,16 +104,24 @@ if is_owner():
             for p in prodotti:
                 tot = df_modificato.loc[i, f"p{p['id']} - Totale"]
                 if tot and float(tot) > 0:
-                    esistente = mappa_esistenti.get((p["id"], str(d)))
-                    dir_prec = float(esistente["kg_diretta"]) if esistente and esistente.get("kg_diretta") else 0.0
-                    dir_prec = min(dir_prec, float(tot))
+                    tot = float(tot)
+                    tipo_vendita = p.get("tipo_vendita") or "entrambe"
+                    if tipo_vendita == "diretta":
+                        kg_dir, kg_terzi = tot, 0.0
+                    elif tipo_vendita == "terzi":
+                        kg_dir, kg_terzi = 0.0, tot
+                    else:  # entrambe: mantiene la quota diretta già impostata manualmente, se c'è
+                        esistente = mappa_esistenti.get((p["id"], str(d)))
+                        dir_prec = float(esistente["kg_diretta"]) if esistente and esistente.get("kg_diretta") else 0.0
+                        dir_prec = min(dir_prec, tot)
+                        kg_dir, kg_terzi = dir_prec, tot - dir_prec
                     records.append({
                         "caseificio_id": caseificio_id,
                         "prodotto_id": p["id"],
                         "data": str(d),
-                        "kg_totale": float(tot),
-                        "kg_diretta": dir_prec,
-                        "kg_terzi": float(tot) - dir_prec,
+                        "kg_totale": tot,
+                        "kg_diretta": kg_dir,
+                        "kg_terzi": kg_terzi,
                     })
         if records:
             client.table("produzioni").upsert(records, on_conflict="prodotto_id,data").execute()
@@ -126,11 +134,15 @@ st.divider()
 
 # ------------------------------------------------------------
 # BLOCCO: VENDITA DIRETTA (OPZIONALE, TERZI CALCOLATO PER DIFFERENZA)
+# Mostrata SOLO per i prodotti con tipo_vendita "entrambe" - se un prodotto è impostato
+# come "solo diretta" o "solo terzi" in Prodotti, la suddivisione è già automatica
+# (fatta sopra al salvataggio) e non serve chiederla di nuovo qui.
 # ------------------------------------------------------------
 st.subheader("Vendita diretta (facoltativo)")
-st.caption("Se per un prodotto in un giorno hai venduto direttamente una parte, indicalo qui: il resto viene calcolato automaticamente come venduto a terzi.")
+st.caption("Se per un prodotto in un giorno hai venduto direttamente una parte, indicalo qui: il resto viene calcolato automaticamente come venduto a terzi. Visibile solo per i prodotti impostati su 'Entrambe' in Prodotti.")
 
-righe_con_totale = [(p, d) for p in prodotti for d in date_periodo if mappa_esistenti.get((p["id"], str(d))) and float(mappa_esistenti[(p["id"], str(d))].get("kg_totale") or 0) > 0]
+prodotti_entrambe = [p for p in prodotti if (p.get("tipo_vendita") or "entrambe") == "entrambe"]
+righe_con_totale = [(p, d) for p in prodotti_entrambe for d in date_periodo if mappa_esistenti.get((p["id"], str(d))) and float(mappa_esistenti[(p["id"], str(d))].get("kg_totale") or 0) > 0]
 
 if not righe_con_totale:
     st.info("Inserisci prima qualche totale nella griglia sopra e salva, poi torna qui per indicare la vendita diretta.")
