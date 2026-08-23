@@ -190,41 +190,32 @@ st.divider()
 
 # ------------------------------------------------------------
 # BLOCCO: MOVIMENTI LATTE CONGELATO
+# CORREZIONE (chiarito con l'utente 22/08): il RITIRO del latte dal congelatore
+# (quando torna indietro) NON si registra più qui - va inserito nella normale
+# griglia conferimenti qui sopra, come un conferitore qualsiasi (il congelatore
+# va configurato in Conferitori come tipo "congelatore" con tipo di latte
+# "Bufala": il programma lo riconosce e lo conta automaticamente come Ritirato
+# Bufala/Refrigerato Bufala, tenendo comunque traccia di quanto viene "da
+# congelato" per il calcolo mostrato in Registro). Qui resta SOLO il
+# congelamento (l'uscita, quando il latte viene mandato a congelare).
 # ------------------------------------------------------------
-st.subheader("❄️ Movimenti latte congelato")
-st.caption("DDT e struttura esterna sono facoltativi: lasciali vuoti se il latte resta nel tuo stabilimento (semplice prelievo interno); compilali se il latte e' tenuto presso una struttura terza.")
-mcol1, mcol2 = st.columns(2)
-with mcol1:
-    with st.expander("➕ Registra scongelamento (si somma alla Bufala non-DOP)"):
-        with st.form("nuovo_scongelamento"):
-            data_sc = st.date_input("Data", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine)
-            kg_sc = st.number_input("KG scongelati", min_value=0.0, step=1.0)
-            ddt_sc = st.text_input("N. DDT (facoltativo, solo se struttura esterna)")
-            struttura_sc = st.text_input("Struttura esterna (facoltativo)")
-            if st.form_submit_button("Salva scongelamento"):
-                client.table("movimenti_congelato").insert({
-                    "caseificio_id": caseificio_id, "data": str(data_sc),
-                    "tipo": "scongelamento", "kg": kg_sc,
-                    "ddt": ddt_sc or None, "struttura_esterna": struttura_sc or None,
-                }).execute()
-                st.success("Registrato.")
-                st.rerun()
-with mcol2:
-    with st.expander("➕ Registra congelamento (bufala DOP o non-DOP)"):
-        with st.form("nuovo_congelamento"):
-            data_cg = st.date_input("Data ", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine)
-            origine_cg = st.radio("Origine", ["bufala_dop", "bufala"], format_func=lambda x: "Bufala DOP" if x == "bufala_dop" else "Bufala")
-            kg_cg = st.number_input("KG messi in congelamento", min_value=0.0, step=1.0)
-            ddt_cg = st.text_input("N. DDT (facoltativo, solo se struttura esterna)")
-            struttura_cg = st.text_input("Struttura esterna (facoltativo) ")
-            if st.form_submit_button("Salva congelamento"):
-                client.table("movimenti_congelato").insert({
-                    "caseificio_id": caseificio_id, "data": str(data_cg),
-                    "tipo": "congelamento", "origine": origine_cg, "kg": kg_cg,
-                    "ddt": ddt_cg or None, "struttura_esterna": struttura_cg or None,
-                }).execute()
-                st.success("Registrato.")
-                st.rerun()
+st.subheader("❄️ Congelamento latte")
+st.caption("Il RITIRO del latte dal congelatore va inserito nella griglia conferimenti qui sopra (come un conferitore di tipo \"congelatore\"), non qui. Qui si registra solo l'invio del latte a congelare.")
+with st.expander("➕ Registra congelamento (bufala DOP o non-DOP)"):
+    with st.form("nuovo_congelamento"):
+        data_cg = st.date_input("Data", value=periodo_inizio, min_value=periodo_inizio, max_value=periodo_fine, format="DD/MM/YYYY")
+        origine_cg = st.radio("Origine", ["bufala_dop", "bufala"], format_func=lambda x: "Bufala DOP" if x == "bufala_dop" else "Bufala")
+        kg_cg = st.number_input("KG messi in congelamento", min_value=0.0, step=1.0)
+        ddt_cg = st.text_input("N. DDT (facoltativo, solo se struttura esterna)")
+        struttura_cg = st.text_input("Struttura esterna (facoltativo)")
+        if st.form_submit_button("Salva congelamento"):
+            client.table("movimenti_congelato").insert({
+                "caseificio_id": caseificio_id, "data": str(data_cg),
+                "tipo": "congelamento", "origine": origine_cg, "kg": kg_cg,
+                "ddt": ddt_cg or None, "struttura_esterna": struttura_cg or None,
+            }).execute()
+            st.success("Registrato.")
+            st.rerun()
 
 movimenti = (
     client.table("movimenti_congelato")
@@ -239,7 +230,7 @@ movimenti = (
 if movimenti:
     st.table([{
         "Data": _dt.date.fromisoformat(m["data"]).strftime("%d/%m/%Y"),
-        "Tipo": "Scongelamento" if m["tipo"] == "scongelamento" else "Congelamento",
+        "Tipo": "Scongelamento (storico)" if m["tipo"] == "scongelamento" else "Congelamento",
         "Origine": ("Bufala DOP" if m.get("origine") == "bufala_dop" else "Bufala") if m.get("origine") else "-",
         "KG": m["kg"],
         "DDT": m.get("ddt") or "-",
