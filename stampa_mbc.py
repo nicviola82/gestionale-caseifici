@@ -375,13 +375,20 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
     # --- Sezione Filatura ---
     ws["M9"] = get_impostazione(client, caseificio_id, "temperatura_acqua_filatura", data_giorno)
 
-    kg_affumicata = get_produzione_giorno(client, caseificio_id, data_giorno, "affumicat")
+    # Affumicata e Delattosata: stesso meccanismo automatico (nessun inserimento manuale,
+    # il programma legge quanto prodotto in Produzioni quel giorno), confermato dall'utente.
+    # Filtrate a solo_dop=True: solo le versioni DOP contano per MBC.
+    _, produzione_affum = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "affumicat", solo_dop=True)
+    kg_affumicata = float((produzione_affum or {}).get("kg_totale") or 0)
     if kg_affumicata > 0:
         ws["M21"] = "X"
         ws["M22"] = ""
     else:
         ws["M21"] = ""
         ws["M22"] = "X"
+
+    _, produzione_delatt = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "senza lattosio", solo_dop=True)
+    kg_delattosata = float((produzione_delatt or {}).get("kg_totale") or 0)
 
     # --- Sezione Produzioni (matrice prodotto: fino a 2 decimali, MAI arrotondata a intero) ---
     # NOTA: intestazioni reali sono R9='Prodotto' (testo), V9='lotto n.', W9='Q.tà (kg)'.
@@ -395,10 +402,16 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
 
     ws["R10"] = "Mozzarella di Bufala Campana DOP"
     ws["V10"] = lotto_mozz
-    ws["W10"] = r_prod(kg_mozz_totale)
+    # CORREZIONE: W10 ora somma mozzarella DOP normale + delattosata DOP + affumicata DOP
+    # prodotte quel giorno (prima usava solo la mozzarella "normale", come richiesto).
+    ws["W10"] = r_prod(kg_mozz_totale + kg_delattosata + kg_affumicata)
 
     # R11 "Confezionata" = vendita a terzi; R12 "Sfusa per punto vendita" = vendita diretta
     # (mappatura confermata dall'utente). Sostituiscono le vecchie formule "=V10"/"=W10".
+    # NOTA: V11/W11/V12/W12 restano basate solo sulla mozzarella "normale" (kg_mozz_diretta/
+    # kg_mozz_terzi) - la suddivisione diretta/terzi di delattosata+affumicata non è ancora
+    # stata chiarita con l'utente (se proporzionale o per singolo prodotto), da fare quando
+    # confermato.
     ws["V11"] = lotto_mozz
     ws["W11"] = r_prod(kg_mozz_terzi)
     ws["V12"] = lotto_mozz
