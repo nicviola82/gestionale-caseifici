@@ -202,22 +202,101 @@ for p in prodotti_dop_altri + prodotti_declassati:
             if r and r > 0:
                 consumo_extra_dop[("bufala_dop", ds)] = consumo_extra_dop.get(("bufala_dop", ds), 0) + kg_dop / r
 
-# giacenza (apertura giorno = chiusura giorno precedente)
+# ------------------------------------------------------------
+# BLOCCO: RICOTTA -> CONSUMO LATTE BUFALA (SOLO SE IMPOSTATO)
+# Di regola la Ricotta NON entra nel conteggio latte (si fa con il siero, un
+# sottoprodotto già contato altrove tramite il foglio Siero). ECCEZIONE: se in
+# Impostazioni Fisse è indicata una percentuale di latte di bufala aggiunto
+# alla ricotta (perc_latte_bufala_rbc), quella quota è latte VERO consumato e
+# va scalata dalla giacenza bufala come un'uscita, esattamente come un
+# trasformato. NOTA: si scala dal bucket "bufala" non-DOP (non bufala_dop),
+# perché il campo Impostazioni Fisse dice genericamente "latte di bufala" - se
+# invece dev'essere DOP specificamente, va corretto qui.
+# NOTA PRESTAZIONI: poche query TOTALI per l'intero periodo (mai una query per
+# ogni singolo giorno, che su un periodo lungo renderebbe la pagina lentissima
+# - stesso principio già seguito in siero.py).
+# ------------------------------------------------------------
 tipi_giac = ["bufala_dop", "bufala", "vaccino", "semilavorato_bufala", "semilavorato_vaccino"]
 tutte_le_date = sorted(set(
     [d for (_, d) in raccolto.keys()] + [d for (_, d) in trasformato_map.keys()]
     + [d for (_, d) in venduto_map.keys()] + [str(d) for d in date_periodo]
 ))
-giacenza_per_tipo = {t: 0.0 for t in tipi_giac}
+
+perc_bufala_rbc_storico = (
+    client.table("impostazioni_registro")
+    .select("data_da, valore")
+    .eq("caseificio_id", caseificio_id)
+    .eq("campo", "perc_latte_bufala_rbc")
+    .order("data_da")
+    .execute()
+    .data
+)
+
+def perc_bufala_rbc_alla_data(data_str):
+    valore = 0.0
+    for r in perc_bufala_rbc_storico:
+        if r["data_da"] <= data_str:
+            try:
+                valore = float(r["valore"])
+            except (TypeError, ValueError):
+                valore = 0.0
+        else:
+            break
+    return valore
+
+ricotta_prodotti = (
+    client.table("prodotti")
+    .select("id, resa_automatica_percent")
+    .eq("caseificio_id", caseificio_id)
+    .eq("is_dop", True)
+    .ilike("nome", "%Ricotta di Bufala Campana DOP%")
+    .execute()
+    .data
+)
+prodotto_ricotta = ricotta_prodotti[0] if ricotta_prodotti else None
+resa_ricotta = float(prodotto_ricotta["resa_automatica_percent"]) if prodotto_ricotta and prodotto_ricotta.get("resa_automatica_percent") else None
+
+ricotta_per_giorno = {}
+if prodotto_ricotta:
+    for r in (
+        client.table("produzioni")
+        .select("data, kg_totale")
+        .eq("prodotto_id", prodotto_ricotta["id"])
+        .gte("data", str(periodo_inizio))
+        .lte("data", str(periodo_fine))
+        .execute()
+        .data
+    ):
+        ricotta_per_giorno[r["data"]] = ricotta_per_giorno.get(r["data"], 0) + float(r["kg_totale"] or 0)
+
+ricotta_bufala_map = {}
+if resa_ricotta:
+    for d in tutte_le_date:
+        perc = perc_bufala_rbc_alla_data(d)
+        kg_ricotta_oggi = ricotta_per_giorno.get(d, 0)
+        if perc > 0 and kg_ricotta_oggi > 0:
+            kg_siero_lavorato = kg_ricotta_oggi / (resa_ricotta / 100)
+            ricotta_bufala_map[d] = round(perc / 100 * kg_siero_lavorato)
+
+# giacenza (apertura giorno = chiusura giorno precedente)
+# REGOLA ARROTONDAMENTO: ogni componente (entrata/uscita) va arrotondato a intero
+# PRIMA di essere sommato o sottratto, e la giacenza cumulativa risultante resta
+# sempre un intero passo dopo passo - non si accumula in decimali per poi
+# arrotondare solo in visualizzazione, altrimenti gli arrotondamenti si sommano
+# in modo scorretto lungo il periodo.
+giacenza_per_tipo = {t: 0 for t in tipi_giac}
 giacenza_per_giorno = {}
 for d in tutte_le_date:
     for t in tipi_giac:
         giacenza_per_giorno[(t, d)] = giacenza_per_tipo[t]
-        entrata = raccolto.get((t, d), 0)
-        uscita = (trasformato_map.get((t, d), 0)
-                  + consumo_extra_dop.get((t, d), 0)
-                  + venduto_map.get((t, d), 0)
-                  + congelato_map.get((t if t in ("bufala_dop", "bufala") else "bufala", d), 0) * (1 if t in ("bufala_dop", "bufala") else 0))
+        entrata = round(raccolto.get((t, d), 0))
+        uscita = round(
+            trasformato_map.get((t, d), 0)
+            + consumo_extra_dop.get((t, d), 0)
+            + venduto_map.get((t, d), 0)
+            + congelato_map.get((t if t in ("bufala_dop", "bufala") else "bufala", d), 0) * (1 if t in ("bufala_dop", "bufala") else 0)
+            + (ricotta_bufala_map.get(d, 0) if t == "bufala" else 0)
+        )
         giacenza_per_tipo[t] = giacenza_per_tipo[t] + entrata - uscita
 
 # ------------------------------------------------------------
@@ -227,18 +306,21 @@ for d in tutte_le_date:
 # entra quando c'è un ritiro dal congelatore, esce nella stessa proporzione in cui
 # esce il resto della giacenza bufala quel giorno (trasformato + venduto + congelato).
 # Serve per rispondere a "quanto del Trasformato Bufala di oggi viene dal congelato".
+# Stessa regola di arrotondamento: intero ad ogni passaggio, non solo alla fine.
 # ------------------------------------------------------------
-giacenza_congelata_buf = 0.0
+giacenza_congelata_buf = 0
 giacenza_congelata_apertura = {}
 for d in tutte_le_date:
     giacenza_congelata_apertura[d] = giacenza_congelata_buf
-    entrata_c = raccolto_da_congelatore_buf.get(d, 0)
+    entrata_c = round(raccolto_da_congelatore_buf.get(d, 0))
     giac_tot_apertura = giacenza_per_giorno.get(("bufala", d), 0)
-    uscita_tot = (trasformato_map.get(("bufala", d), 0)
-                  + venduto_map.get(("bufala", d), 0)
-                  + congelato_map.get(("bufala", d), 0))
+    uscita_tot = round(
+        trasformato_map.get(("bufala", d), 0)
+        + venduto_map.get(("bufala", d), 0)
+        + congelato_map.get(("bufala", d), 0)
+    )
     quota = (giacenza_congelata_buf / giac_tot_apertura) if giac_tot_apertura > 0 else 0.0
-    uscita_c = uscita_tot * quota
+    uscita_c = round(uscita_tot * quota)
     giacenza_congelata_buf = giacenza_congelata_buf + entrata_c - uscita_c
 
 # ------------------------------------------------------------
@@ -284,18 +366,18 @@ for d in date_periodo:
     riga = {"Data": d.strftime("%d/%m")}
 
     # REFRIGERATO (sola lettura)
-    if usa_dop:  riga["Ref.MBC"]  = round(giacenza_per_giorno.get(("bufala_dop", ds), 0), 1)
-    if usa_buf:  riga["Ref.Buf"]  = round(giacenza_per_giorno.get(("bufala", ds), 0), 1)
-    if usa_vacc: riga["Ref.Vacc"] = round(giacenza_per_giorno.get(("vaccino", ds), 0), 1)
-    if usa_sem_buf:  riga["Ref.SemB"] = round(giacenza_per_giorno.get(("semilavorato_bufala", ds), 0), 1)
-    if usa_sem_vacc: riga["Ref.SemV"] = round(giacenza_per_giorno.get(("semilavorato_vaccino", ds), 0), 1)
+    if usa_dop:  riga["Ref.MBC"]  = round(giacenza_per_giorno.get(("bufala_dop", ds), 0))
+    if usa_buf:  riga["Ref.Buf"]  = round(giacenza_per_giorno.get(("bufala", ds), 0))
+    if usa_vacc: riga["Ref.Vacc"] = round(giacenza_per_giorno.get(("vaccino", ds), 0))
+    if usa_sem_buf:  riga["Ref.SemB"] = round(giacenza_per_giorno.get(("semilavorato_bufala", ds), 0))
+    if usa_sem_vacc: riga["Ref.SemV"] = round(giacenza_per_giorno.get(("semilavorato_vaccino", ds), 0))
 
     # RITIRATO (da Dati Inseriti, sola lettura)
-    if usa_dop:  riga["Rit.MBC"]  = round(raccolto.get(("bufala_dop", ds), 0), 1)
-    if usa_buf:  riga["Rit.Buf"]  = round(raccolto.get(("bufala", ds), 0), 1)
-    if usa_vacc: riga["Rit.Vacc"] = round(raccolto.get(("vaccino", ds), 0), 1)
-    if usa_sem_buf:  riga["Rit.SemB"] = round(raccolto.get(("semilavorato_bufala", ds), 0), 1)
-    if usa_sem_vacc: riga["Rit.SemV"] = round(raccolto.get(("semilavorato_vaccino", ds), 0), 1)
+    if usa_dop:  riga["Rit.MBC"]  = round(raccolto.get(("bufala_dop", ds), 0))
+    if usa_buf:  riga["Rit.Buf"]  = round(raccolto.get(("bufala", ds), 0))
+    if usa_vacc: riga["Rit.Vacc"] = round(raccolto.get(("vaccino", ds), 0))
+    if usa_sem_buf:  riga["Rit.SemB"] = round(raccolto.get(("semilavorato_bufala", ds), 0))
+    if usa_sem_vacc: riga["Rit.SemV"] = round(raccolto.get(("semilavorato_vaccino", ds), 0))
 
     # TRASFORMATO (editabile — solo DOP per MBC, no latte non-DOP per prodotti DOP)
     if usa_dop:  riga["Tr.MBC"]   = trasf_periodo.get(("bufala_dop", ds), 0.0)
@@ -306,7 +388,10 @@ for d in date_periodo:
         # del giorno, come da conferma dell'utente - non teniamo lotti separati per FIFO)
         giac_tot_ap = giacenza_per_giorno.get(("bufala", ds), 0)
         quota_cong = (giacenza_congelata_apertura.get(ds, 0) / giac_tot_ap) if giac_tot_ap > 0 else 0.0
-        riga["Tr.BufCong"] = round(tr_buf_oggi * quota_cong, 1)
+        riga["Tr.BufCong"] = round(round(tr_buf_oggi) * quota_cong)
+        # latte bufala consumato dalla Ricotta quel giorno (solo se impostato in
+        # Impostazioni Fisse - vedi blocco RICOTTA -> CONSUMO LATTE BUFALA sopra)
+        riga["RBC.Buf"] = ricotta_bufala_map.get(ds, 0)
     if usa_vacc: riga["Tr.Vacc"]  = trasf_periodo.get(("vaccino", ds), 0.0)
     if usa_sem_buf:  riga["Tr.SemB"]  = trasf_periodo.get(("semilavorato_bufala", ds), 0.0)
     if usa_sem_vacc: riga["Tr.SemV"]  = trasf_periodo.get(("semilavorato_vaccino", ds), 0.0)
@@ -367,7 +452,7 @@ def famiglia_azzerata(cols):
 famiglie = {
     "MBC": [c for c in df.columns if c.startswith("Ref.MBC") or c.startswith("Rit.MBC") or c.startswith("Tr.MBC")
             or c == "Mozz.MBC" or c == "R.MBC" or c.startswith("MBC.")],
-    "Buf": [c for c in df.columns if c in ("Ref.Buf", "Rit.Buf", "Tr.Buf", "R.Buf", "Buf.Cong", "Tr.BufCong")],
+    "Buf": [c for c in df.columns if c in ("Ref.Buf", "Rit.Buf", "Tr.Buf", "R.Buf", "Buf.Cong", "Tr.BufCong", "RBC.Buf")],
     "Vacc": [c for c in df.columns if c in ("Ref.Vacc", "Rit.Vacc", "Tr.Vacc", "R.Vacc", "VaccVend")],
     "SemB": [c for c in df.columns if c in ("Ref.SemB", "Rit.SemB", "Tr.SemB")],
     "SemV": [c for c in df.columns if c in ("Ref.SemV", "Rit.SemV", "Tr.SemV")],
@@ -407,12 +492,13 @@ col_readonly |= {c for c in df.columns if c.startswith("Ref.") or c.startswith("
 col_readonly |= {c for c in df.columns if c == "Mozz.MBC" or c.startswith("Mis.") or c.startswith("Vac.") or c.startswith("Con.") or c.startswith("Cag.")}
 col_readonly |= {c for c in df.columns if c.endswith("Tot") or c.endswith("dop")}
 col_readonly |= {c for c in df.columns if c == "Tr.BufCong"}
+col_readonly |= {c for c in df.columns if c == "RBC.Buf"}
 
 column_config = {"Data": st.column_config.TextColumn("Data", disabled=True, width=60)}
 for col in df.columns:
     if col == "Data": continue
     disabled = col in col_readonly
-    etichetta = "Tr.Buf\n(di cui congelato)" if col == "Tr.BufCong" else col
+    etichetta = "Tr.Buf\n(di cui congelato)" if col == "Tr.BufCong" else ("Bufala\nusata per RBC" if col == "RBC.Buf" else col)
     column_config[col] = st.column_config.NumberColumn(etichetta, disabled=disabled, min_value=0.0 if not disabled else None, step=1.0 if not disabled else None, width=70) if not col.startswith("R.") else st.column_config.TextColumn(col, disabled=True, width=65)
 
 df_mod = st.data_editor(df, column_config=column_config, hide_index=True, width="stretch", key="griglia_registro")
