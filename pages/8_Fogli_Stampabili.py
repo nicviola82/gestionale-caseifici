@@ -42,7 +42,7 @@ if modalita == "Un singolo giorno":
     # ------------------------------------------------------------
     # MBC + RBC nello stesso file (comportamento storico per un singolo giorno)
     # ------------------------------------------------------------
-    st.subheader("MBC + RBC - Registri Mozzarella e Ricotta")
+    st.subheader("MBC + RBC insieme - Registri Mozzarella e Ricotta")
     if st.button("📄 Genera MBC + RBC del giorno"):
         output_path = f"Scheda_{data_giorno.strftime('%Y%m%d')}.xlsx"
         genera_mbc(client, caseificio_id, data_giorno, output_path)
@@ -53,8 +53,47 @@ if modalita == "Un singolo giorno":
                 data=f.read(),
                 file_name=output_path,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_mbc_rbc_giorno",
             )
         st.success("MBC e RBC generati.")
+
+    st.divider()
+
+    # ------------------------------------------------------------
+    # SOLO MBC o SOLO RBC per un singolo giorno (richiesto: poter stampare un
+    # tipo alla volta anche per un giorno solo, non solo per periodo) - riusa
+    # le stesse funzioni "periodo" passando lo stesso giorno come inizio e
+    # fine: producono un file con UN SOLO tipo di foglio, senza gli altri 2.
+    # ------------------------------------------------------------
+    col_solo1, col_solo2 = st.columns(2)
+    with col_solo1:
+        st.subheader("Solo MBC")
+        if st.button("📄 Genera solo MBC del giorno"):
+            output_path_mbc = f"MBC_{data_giorno.strftime('%Y%m%d')}.xlsx"
+            genera_mbc_periodo(client, caseificio_id, data_giorno, data_giorno, output_path_mbc)
+            with open(output_path_mbc, "rb") as f:
+                st.download_button(
+                    "⬇️ Scarica solo MBC",
+                    data=f.read(),
+                    file_name=output_path_mbc,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_solo_mbc_giorno",
+                )
+            st.success("MBC generato (solo questo foglio).")
+    with col_solo2:
+        st.subheader("Solo RBC")
+        if st.button("📄 Genera solo RBC del giorno"):
+            output_path_rbc = f"RBC_{data_giorno.strftime('%Y%m%d')}.xlsx"
+            genera_rbc_periodo(client, caseificio_id, data_giorno, data_giorno, output_path_rbc)
+            with open(output_path_rbc, "rb") as f:
+                st.download_button(
+                    "⬇️ Scarica solo RBC",
+                    data=f.read(),
+                    file_name=output_path_rbc,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_solo_rbc_giorno",
+                )
+            st.success("RBC generato (solo questo foglio).")
 
     st.divider()
 
@@ -72,6 +111,7 @@ if modalita == "Un singolo giorno":
                 data=f.read(),
                 file_name=output_path_tr,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_tr_giorno",
             )
         st.success("tr generato.")
 
