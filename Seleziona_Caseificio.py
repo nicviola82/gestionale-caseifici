@@ -54,6 +54,8 @@ if st.session_state.get("caseificio_id") != nuovo_caseificio_id:
 st.session_state["caseificio_id"] = nuovo_caseificio_id
 st.session_state["caseificio_nome"] = scelta
 
+st.page_link("pages/1_Anagrafica_Caseificio.py", label="✏️ Modifica dati anagrafici di questo caseificio", icon="✏️")
+
 # ------------------------------------------------------------
 # BLOCCO: ELIMINA CASEIFICIO (solo owner)
 # Richiede conferma esplicita (scrivere la ragione sociale) prima
