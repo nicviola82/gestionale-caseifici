@@ -108,6 +108,63 @@ def siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno):
 
 
 # ------------------------------------------------------------
+# BLOCCO: VERSIONI "PERIODO" (sommano più giorni con SOLO query in blocco -
+# mai una query ripetuta per ogni singolo giorno del periodo, stesso
+# principio della giacenza cumulativa sotto). Usate dalla pagina Siero per
+# mostrare un riepilogo del periodo selezionato invece del solo giorno.
+# ------------------------------------------------------------
+def _date_nel_periodo(periodo_inizio, periodo_fine):
+    d = periodo_inizio
+    while d <= periodo_fine:
+        yield d
+        d += _dt.timedelta(days=1)
+
+
+def siero_dop_prodotto_periodo(client, caseificio_id, periodo_inizio, periodo_fine):
+    trasf_dop = _bulk_trasformato(client, caseificio_id, periodo_fine, tipo_latte="bufala_dop")
+    mozz_map, _ = _bulk_produzione(client, caseificio_id, "Mozzarella di Bufala Campana DOP", True, periodo_fine)
+    tot = 0.0
+    for d in _date_nel_periodo(periodo_inizio, periodo_fine):
+        ds = str(d)
+        tot += max(0.0, trasf_dop.get(ds, 0.0) - mozz_map.get(ds, 0.0))
+    return tot
+
+
+def siero_totale_prodotto_periodo(client, caseificio_id, periodo_inizio, periodo_fine):
+    trasf_tot = _bulk_trasformato(client, caseificio_id, periodo_fine)
+    tot = 0.0
+    for d in _date_nel_periodo(periodo_inizio, periodo_fine):
+        tot += max(0.0, trasf_tot.get(str(d), 0.0))
+    return tot
+
+
+def siero_utilizzato_ricotta_dop_periodo(client, caseificio_id, periodo_inizio, periodo_fine):
+    ricotta_map, prodotto = _bulk_produzione(client, caseificio_id, "Ricotta di Bufala Campana DOP", True, periodo_fine)
+    if not prodotto:
+        return 0.0, 0.0, None
+    resa = get_resa_ricotta_dop(client, caseificio_id)
+    ricotta_tot = sum(ricotta_map.get(str(d), 0.0) for d in _date_nel_periodo(periodo_inizio, periodo_fine))
+    if ricotta_tot <= 0:
+        return 0.0, 0.0, None
+    if not resa:
+        return ricotta_tot, 0.0, "Resa % non impostata per la Ricotta di Bufala Campana DOP (vai su Prodotti)"
+    return ricotta_tot, ricotta_tot / (resa / 100), None
+
+
+def get_smaltimenti_periodo(client, caseificio_id, periodo_inizio, periodo_fine):
+    return (
+        client.table("smaltimento_siero")
+        .select("*")
+        .eq("caseificio_id", caseificio_id)
+        .gte("data", str(periodo_inizio))
+        .lte("data", str(periodo_fine))
+        .order("data")
+        .execute()
+        .data
+    )
+
+
+# ------------------------------------------------------------
 # BLOCCO: DATI IN BLOCCO (una query sola per tutta la storia,
 # non una per giorno) - usati SOLO per calcolare la giacenza
 # cumulativa, mai in un ciclo che rifa' la stessa query ogni volta.
@@ -171,12 +228,14 @@ def giacenza_siero_dop(client, caseificio_id, alla_data, includi_giorno=False):
 
 
 # ------------------------------------------------------------
-# BLOCCO: SMALTIMENTO (tabella smaltimento_siero - da creare su
-# Supabase, SQL nel commento sotto)
+# BLOCCO: SMALTIMENTO (tabella smaltimento_siero - vedi
+# migrazione_smaltimento_siero.sql da eseguire su Supabase se non
+# ancora fatto - QUESTA TABELLA MANCANTE era la causa dell'errore
+# segnalato dall'utente sul foglio Siero, 24/08)
 #
 # create table smaltimento_siero (
-#   id bigint generated always as identity primary key,
-#   caseificio_id bigint references caseifici(id),
+#   id uuid primary key default gen_random_uuid(),
+#   caseificio_id uuid references caseifici(id),
 #   data date not null,
 #   azienda text not null,
 #   kg numeric not null,
