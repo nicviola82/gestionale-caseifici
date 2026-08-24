@@ -314,12 +314,16 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
         client, caseificio_id, data_giorno, ["allevatore"], "bufala_dop"
     )
     ws["D13"] = r_int(kg_allevamento)
+    # CORREZIONE: E13 mostra il tank dove il latte e' stoccato (come E10), non piu' vuoto -
+    # in attesa del grosso lavoro futuro sui refrigeranti per-lotto/tank specifico
+    ws["E13"] = get_refrigerante_principale(client, caseificio_id)
 
-    kg_raccoglitore, ddt_raccoglitore = get_conferimenti_per_categoria(
+    kg_raccoglitore, _ddt_raccoglitore = get_conferimenti_per_categoria(
         client, caseificio_id, data_giorno, ["intermediario"], "bufala_dop"
     )
     ws["D14"] = r_int(kg_raccoglitore)
-    ws["E14"] = ", ".join(ddt_raccoglitore)
+    # CORREZIONE: E14 mostra il tank (non piu' il DDT, come richiesto) - stesso discorso di E13
+    ws["E14"] = get_refrigerante_principale(client, caseificio_id)
 
     # D15/D16: latte da caseifici DOP - una riga per ogni caseificio (max 2/giorno, confermato
     # dall'utente che le righe esistono gia' nel template, nessuna modifica di struttura)
@@ -327,21 +331,33 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
     # nella generazione multi-giorno (genera_mbc_periodo) lo stesso foglio viene duplicato da un
     # giorno all'altro: senza il fallback, un valore del giorno precedente resterebbe visibile
     # anche nel giorno successivo se quel giorno non ha caseifici DOP da cui acquistare.
+    # CORREZIONE: anche E15/E16 mostrano il tank (non piu' il DDT), stesso discorso di E13/E14.
     caseifici_dop = get_conferimenti_caseificio_dop_dettaglio(client, caseificio_id, data_giorno)
     ws["D15"] = r_int(caseifici_dop[0]["kg"]) if len(caseifici_dop) >= 1 else ""
-    ws["E15"] = caseifici_dop[0]["ddt"] if len(caseifici_dop) >= 1 else ""
+    ws["E15"] = get_refrigerante_principale(client, caseificio_id) if len(caseifici_dop) >= 1 else ""
     ws["D16"] = r_int(caseifici_dop[1]["kg"]) if len(caseifici_dop) >= 2 else ""
-    ws["E16"] = caseifici_dop[1]["ddt"] if len(caseifici_dop) >= 2 else ""
+    ws["E16"] = get_refrigerante_principale(client, caseificio_id) if len(caseifici_dop) >= 2 else ""
 
     # --- Sezione Lavorazione ---
-    ws["G10"] = get_impostazione(client, caseificio_id, "temperatura_attivazione", data_giorno)
-    ws["G11"] = get_impostazione(client, caseificio_id, "tipo_siero_innesto", data_giorno)
-    ws["G12"] = get_impostazione(client, caseificio_id, "caglio_fornitore", data_giorno)
-    ws["J12"] = get_impostazione(client, caseificio_id, "caglio_lotto", data_giorno)
-    ws["G13"] = get_impostazione(client, caseificio_id, "acidita_primo_siero", data_giorno)  # pH finale
-    ws["G14"] = get_impostazione(client, caseificio_id, "temperatura_latte", data_giorno)    # tempo maturazione
-    ws["G16"] = 0  # Acidita' Primo Siero: per ora 0, in attesa del foglio Siero
-    ws["G22"] = get_impostazione(client, caseificio_id, "cicli_lavorazione", data_giorno)
+    # CORREZIONE IMPORTANTE (bug grave trovato il 24/08): G10-G14 sono le ETICHETTE della
+    # tabella (celle unite G:I, es. "Temperatura attivazione °C"), NON i valori - scriverci
+    # sopra CANCELLAVA il testo dell'etichetta. I veri valori vanno nella colonna J (J10-J14),
+    # dove nel template originale c'erano dei valori di esempio mai sovrascritti finora. Stesso
+    # bug per G16 (valore in J16), G22 (valore in K22) e M21/M22 (marcatura in P21/P22, vedi sotto).
+    ws["J10"] = get_impostazione(client, caseificio_id, "temperatura_attivazione", data_giorno)
+    ws["J11"] = get_impostazione(client, caseificio_id, "tipo_siero_innesto", data_giorno)
+    # J12 (Caglio: fornitore e lotto): CORREZIONE - fornitore e lotto vanno CONCATENATI nella
+    # stessa cella J12 (prima erano splittati, fornitore in una cella sbagliata G12 e lotto da
+    # solo in J12).
+    caglio_fornitore = get_impostazione(client, caseificio_id, "caglio_fornitore", data_giorno)
+    caglio_lotto = get_impostazione(client, caseificio_id, "caglio_lotto", data_giorno)
+    ws["J12"] = f"{caglio_fornitore} - {caglio_lotto}" if caglio_fornitore or caglio_lotto else ""
+    ws["J13"] = get_impostazione(client, caseificio_id, "acidita_primo_siero", data_giorno)  # pH finale
+    ws["J14"] = get_impostazione(client, caseificio_id, "tempo_maturazione_minuti", data_giorno)
+    ws["J16"] = 0  # Acidita' Primo Siero: per ora 0, in attesa del foglio Siero
+    ws["K22"] = get_impostazione(client, caseificio_id, "cicli_lavorazione", data_giorno)
+    # K18 (Aggiunte RBC - percentuale sale nel siero per RBC, 0.3% confermato dall'utente):
+    # il template ha gia' il valore di esempio corretto (0.003 = 0.3%), non lo tocchiamo.
 
     kg_trasformato_dop = get_registro_trasformato_dop(client, caseificio_id, data_giorno)  # TODO Registro
     ws["K21"] = r_int(kg_trasformato_dop)
@@ -378,14 +394,17 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
     # Affumicata e Delattosata: stesso meccanismo automatico (nessun inserimento manuale,
     # il programma legge quanto prodotto in Produzioni quel giorno), confermato dall'utente.
     # Filtrate a solo_dop=True: solo le versioni DOP contano per MBC.
+    # CORREZIONE IMPORTANTE: M21 ("AFFUMICATA") e M22 ("LAVORATA A MANO") sono ETICHETTE FISSE
+    # del template - scriverci sopra "X"/"" le cancellava. La marcatura va nelle celle libere
+    # adiacenti P21/P22 (non unite, verificate sul template reale).
     _, produzione_affum = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "affumicat", solo_dop=True)
     kg_affumicata = float((produzione_affum or {}).get("kg_totale") or 0)
     if kg_affumicata > 0:
-        ws["M21"] = "X"
-        ws["M22"] = ""
+        ws["P21"] = "X"
+        ws["P22"] = ""
     else:
-        ws["M21"] = ""
-        ws["M22"] = "X"
+        ws["P21"] = ""
+        ws["P22"] = "X"
 
     _, produzione_delatt = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "senza lattosio", solo_dop=True)
     kg_delattosata = float((produzione_delatt or {}).get("kg_totale") or 0)
@@ -405,6 +424,13 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
     # CORREZIONE: W10 ora somma mozzarella DOP normale + delattosata DOP + affumicata DOP
     # prodotte quel giorno (prima usava solo la mozzarella "normale", come richiesto).
     ws["W10"] = r_prod(kg_mozz_totale + kg_delattosata + kg_affumicata)
+
+    # P14 (riga Filatura "da 30 a 800 gr"): quantita' di mozzarella DOP NORMALE prodotta.
+    ws["P14"] = r_prod(kg_mozz_totale)
+    # Riga 15 (M15/P15) era vuota nel template - aggiunta qui come nuova riga dedicata alla
+    # mozzarella delattosata (etichetta scritta per la prima volta, richiesta esplicita).
+    ws["M15"] = "MOZZARELLA DELATTOSATA" if kg_delattosata > 0 else ""
+    ws["P15"] = r_prod(kg_delattosata) if kg_delattosata > 0 else ""
 
     # R11 "Confezionata" = vendita a terzi; R12 "Sfusa per punto vendita" = vendita diretta
     # (mappatura confermata dall'utente). Sostituiscono le vecchie formule "=V10"/"=W10".
