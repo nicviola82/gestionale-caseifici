@@ -44,6 +44,7 @@ CAMPI = {
     "ora_rottura_cagliata": {"label": "Ora rottura cagliata", "tipo": "ora", "gruppo": "Generale / MBC"},
     "acidita_primo_siero": {"label": "Acidità primo siero (°SH/50ml)", "tipo": "numero", "gruppo": "Generale / MBC"},
     "temperatura_latte": {"label": "Temperatura latte (°C)", "tipo": "numero", "gruppo": "Generale / MBC"},
+    "tempo_maturazione_minuti": {"label": "Tempo di maturazione (minuti)", "tipo": "numero", "gruppo": "Generale / MBC"},
     "temperatura_attivazione": {"label": "Temperatura attivazione (°C)", "tipo": "numero", "gruppo": "Generale / MBC"},
     "tipo_siero_innesto": {"label": "Tipo siero innesto", "tipo": "testo", "gruppo": "Generale / MBC"},
     "temperatura_acqua_filatura": {"label": "Temperatura acqua di filatura (°C)", "tipo": "numero", "gruppo": "Generale / MBC"},
