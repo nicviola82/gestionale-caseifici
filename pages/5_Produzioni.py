@@ -76,7 +76,7 @@ st.subheader("Griglia produzioni")
 st.caption("Solo il Totale prodotto. Ricorda di premere 'Salva produzioni' in fondo.")
 
 def etichetta_prodotto(p):
-    return f"{p['nome']} (DOP)" if p["is_dop"] else p["nome"]
+    return f"{p.get('abbreviazione') or p['nome']}{' (DOP)' if p['is_dop'] else ''}"
 
 righe = []
 for d in date_periodo:
