@@ -56,6 +56,7 @@ if is_owner():
             nome = st.selectbox("Prodotto", PRODOTTI_BASE + ["Altro..."])
             if nome == "Altro...":
                 nome = st.text_input("Nome prodotto personalizzato")
+            abbreviazione = st.text_input("Abbreviazione (usata come intestazione nella griglia di Produzioni, es. \"MBC\")", max_chars=15)
             is_dop = st.checkbox("Prodotto DOP")
             tipo_lotto = st.radio("Tipo di lotto", TIPI_LOTTO, format_func=lambda x: TIPI_LOTTO_LABEL[x], horizontal=True)
             giorni_scadenza = st.number_input("Giorni di scadenza dalla produzione (es. 12)", min_value=0, step=1)
@@ -75,6 +76,7 @@ if is_owner():
                 client.table("prodotti").insert({
                     "caseificio_id": caseificio_id,
                     "nome": nome,
+                    "abbreviazione": abbreviazione or None,
                     "is_dop": is_dop,
                     "attivo": True,
                     "tipo_lotto": tipo_lotto,
@@ -118,6 +120,8 @@ else:
             dop_lbl = " (DOP)" if p["is_dop"] else ""
             lotto_lbl = TIPI_LOTTO_LABEL.get(p["tipo_lotto"], p["tipo_lotto"])
             extra = []
+            if p.get("abbreviazione"):
+                extra.append(f"abbr. \"{p['abbreviazione']}\"")
             if not p.get("mostra_in_produzioni", True):
                 extra.append("nascosto da Produzioni")
             if p.get("consente_piu_terzi"):
@@ -132,6 +136,10 @@ else:
                 with st.popover("✏️ Modifica"):
                     with st.form(f"modifica_prodotto_{p['id']}"):
                         m_nome = st.text_input("Nome prodotto", value=p["nome"], key=f"m_nome_{p['id']}")
+                        m_abbreviazione = st.text_input(
+                            "Abbreviazione (griglia Produzioni)", value=p.get("abbreviazione") or "",
+                            max_chars=15, key=f"m_abbr_{p['id']}",
+                        )
                         m_is_dop = st.checkbox("Prodotto DOP", value=p["is_dop"], key=f"m_dop_{p['id']}")
                         m_tipo_lotto = st.radio(
                             "Tipo di lotto", TIPI_LOTTO, format_func=lambda x: TIPI_LOTTO_LABEL[x],
@@ -161,6 +169,7 @@ else:
                         if st.form_submit_button("Salva modifiche"):
                             client.table("prodotti").update({
                                 "nome": m_nome,
+                                "abbreviazione": m_abbreviazione or None,
                                 "is_dop": m_is_dop,
                                 "tipo_lotto": m_tipo_lotto,
                                 "giorni_scadenza": int(m_giorni_scadenza),
