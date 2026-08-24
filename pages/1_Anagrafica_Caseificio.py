@@ -5,6 +5,7 @@
 import streamlit as st
 from db import get_client
 from auth import login_form, logout_button, is_owner
+from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Anagrafica Caseificio", layout="wide")
 if not login_form():
@@ -71,7 +72,6 @@ caseificio = client.table("caseifici").select("*").eq("id", caseificio_id).singl
 st.subheader(f"Dettaglio: {caseificio['ragione_sociale']}")
 
 import datetime as _dt
-from ui_helpers import mostra_header_caseificio
 oggi = _dt.date.today()
 for campo, etichetta in [("aut_852_scadenza", "Autorizzazione 852"), ("aut_853_scadenza", "Autorizzazione 853")]:
     val = caseificio.get(campo)
