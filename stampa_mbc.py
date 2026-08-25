@@ -399,6 +399,8 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
     # adiacenti P21/P22 (non unite, verificate sul template reale).
     _, produzione_affum = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "affumicat", solo_dop=True)
     kg_affumicata = float((produzione_affum or {}).get("kg_totale") or 0)
+    kg_affumicata_diretta = float((produzione_affum or {}).get("kg_diretta") or 0)
+    kg_affumicata_terzi = float((produzione_affum or {}).get("kg_terzi") or 0)
     if kg_affumicata > 0:
         ws["P21"] = "X"
         ws["P22"] = ""
@@ -408,6 +410,8 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
 
     _, produzione_delatt = get_prodotto_e_produzione_giorno(client, caseificio_id, data_giorno, "senza lattosio", solo_dop=True)
     kg_delattosata = float((produzione_delatt or {}).get("kg_totale") or 0)
+    kg_delattosata_diretta = float((produzione_delatt or {}).get("kg_diretta") or 0)
+    kg_delattosata_terzi = float((produzione_delatt or {}).get("kg_terzi") or 0)
 
     # --- Sezione Produzioni (matrice prodotto: fino a 2 decimali, MAI arrotondata a intero) ---
     # NOTA: intestazioni reali sono R9='Prodotto' (testo), V9='lotto n.', W9='Q.tà (kg)'.
@@ -434,14 +438,14 @@ def _compila_mbc(ws, client, caseificio_id, data_giorno):
 
     # R11 "Confezionata" = vendita a terzi; R12 "Sfusa per punto vendita" = vendita diretta
     # (mappatura confermata dall'utente). Sostituiscono le vecchie formule "=V10"/"=W10".
-    # NOTA: V11/W11/V12/W12 restano basate solo sulla mozzarella "normale" (kg_mozz_diretta/
-    # kg_mozz_terzi) - la suddivisione diretta/terzi di delattosata+affumicata non è ancora
-    # stata chiarita con l'utente (se proporzionale o per singolo prodotto), da fare quando
-    # confermato.
+    # CORREZIONE: W11/W12 ora sommano anche le quote diretta/terzi REALI di delattosata e
+    # affumicata (già registrate come prodotti a se' in Produzioni, con la propria
+    # suddivisione), invece di usare solo la mozzarella "normale" - niente proporzione
+    # sintetica, si usano i dati diretta/terzi effettivamente inseriti per ciascun prodotto.
     ws["V11"] = lotto_mozz
-    ws["W11"] = r_prod(kg_mozz_terzi)
+    ws["W11"] = r_prod(kg_mozz_terzi + kg_delattosata_terzi + kg_affumicata_terzi)
     ws["V12"] = lotto_mozz
-    ws["W12"] = r_prod(kg_mozz_diretta)
+    ws["W12"] = r_prod(kg_mozz_diretta + kg_delattosata_diretta + kg_affumicata_diretta)
 
     # W17 (Altri formaggi): altri prodotti DOP (diversi da mozzarella e ricotta) fatti con
     # latte DOP quel giorno, sostituendo la vecchia formula rotta "=#REF!".
