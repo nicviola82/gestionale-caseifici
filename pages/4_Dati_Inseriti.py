@@ -236,6 +236,36 @@ if movimenti:
         "DDT": m.get("ddt") or "-",
         "Struttura esterna": m.get("struttura_esterna") or "(prelievo interno)",
     } for m in movimenti])
+
+# ------------------------------------------------------------
+# BLOCCO: RIEPILOGO MOVIMENTAZIONI CONGELATO/SCONGELATO DEL PERIODO
+# Somma in un unico riepilogo: (a) congelamento (da movimenti_congelato,
+# tabella sopra), (b) scongelamento storico (vecchi dati, movimenti_congelato
+# tipo "scongelamento"), (c) ritiro dal congelatore in stile NUOVO (dalla
+# griglia conferimenti principale, per i conferitori di tipo "congelatore").
+# ------------------------------------------------------------
+st.subheader("📊 Riepilogo movimentazioni congelato/scongelato del periodo")
+
+kg_congelato_periodo = sum(float(m["kg"]) for m in movimenti if m["tipo"] == "congelamento")
+kg_scongelato_storico_periodo = sum(float(m["kg"]) for m in movimenti if m["tipo"] == "scongelamento")
+
+congelatore_ids_periodo = {c["id"] for c in conferitori if c.get("tipo") == "congelatore"}
+kg_ritiro_congelatore_periodo = sum(
+    float(e.get("kg") or 0) for e in esistenti if e["conferitore_id"] in congelatore_ids_periodo
+)
+kg_ritiro_totale_periodo = kg_scongelato_storico_periodo + kg_ritiro_congelatore_periodo
+
+col_r1, col_r2, col_r3 = st.columns(3)
+col_r1.metric("KG congelati nel periodo", f"{kg_congelato_periodo:.0f} kg")
+col_r2.metric("KG ritirati (tornati) dal congelatore nel periodo", f"{kg_ritiro_totale_periodo:.0f} kg")
+col_r3.metric("Saldo periodo (congelato − ritirato)", f"{kg_congelato_periodo - kg_ritiro_totale_periodo:+.0f} kg")
+if kg_scongelato_storico_periodo > 0:
+    st.caption(
+        f"Di cui {kg_scongelato_storico_periodo:.0f} kg da vecchi movimenti \"scongelamento\" registrati prima "
+        f"della correzione del 22/08, e {kg_ritiro_congelatore_periodo:.0f} kg da conferimenti nella griglia "
+        f"principale per conferitori di tipo \"congelatore\" (modalità attuale)."
+    )
+
 # ------------------------------------------------------------
 # BLOCCO: VENDITA / CESSIONE LATTE
 # ------------------------------------------------------------
