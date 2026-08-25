@@ -234,8 +234,8 @@ def giacenza_siero_dop(client, caseificio_id, alla_data, includi_giorno=False):
 # segnalato dall'utente sul foglio Siero, 24/08)
 #
 # create table smaltimento_siero (
-#   id uuid primary key default gen_random_uuid(),
-#   caseificio_id uuid references caseifici(id),
+#   id bigint generated always as identity primary key,
+#   caseificio_id bigint references caseifici(id),
 #   data date not null,
 #   azienda text not null,
 #   kg numeric not null,
