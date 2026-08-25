@@ -12,6 +12,7 @@
 # ============================================================
 import streamlit as st
 import datetime as _dt
+import pandas as pd
 from db import get_client
 from auth import login_form, logout_button, is_owner
 from ui_helpers import mostra_header_caseificio
@@ -223,12 +224,17 @@ else:
                                                                     "carica_batterica", "cellule_somatiche"],
                                                      key=f"tipoes_{c['id']}")
                             valore = st.number_input("Valore (se applicabile)", value=0.0, key=f"val_{c['id']}")
+                            laboratorio = st.text_input(
+                                "Laboratorio (per carica batterica - chi rilascia le analisi)",
+                                key=f"lab_{c['id']}",
+                            )
                             rilascio = st.date_input("Data rilascio", value=_dt.date.today(), key=f"ril_{c['id']}", format="DD/MM/YYYY")
                             scadenza = st.date_input("Data scadenza", value=_dt.date.today(), key=f"sca_{c['id']}", format="DD/MM/YYYY")
                             if st.form_submit_button("Aggiungi esame"):
                                 client.table("stati_sanitari").insert({
                                     "conferitore_id": c["id"], "tipo": tipo_es,
-                                    "valore": valore, "data_rilascio": str(rilascio),
+                                    "valore": valore, "laboratorio": laboratorio or None,
+                                    "data_rilascio": str(rilascio),
                                     "data_scadenza": str(scadenza),
                                 }).execute()
                                 st.success("Salvato.")
@@ -361,3 +367,67 @@ else:
                         client.table("destinatari_vendita").delete().eq("id", v["id"]).execute()
                         st.success("Eliminato.")
                         st.rerun()
+
+st.divider()
+
+# ------------------------------------------------------------
+# BLOCCO: TABELLA STAMPABILE CONFERITORI
+# Una riga per conferitore con: denominazione, codice di stalla O bollo CE
+# (853), indirizzo, P.IVA, prodotto/i (tipo/i di latte) fornito/i, e stati
+# sanitari - per Brucellosi/Tubercolosi/Leucosi solo la DATA DI SCADENZA più
+# recente, per la Carica batterica il LABORATORIO che rilascia le analisi
+# (non un valore numerico), come richiesto esplicitamente.
+# ------------------------------------------------------------
+st.subheader("📋 Tabella conferitori (stampabile)")
+
+
+def _ultimo_per_tipo(lista, tipo):
+    """Ritorna il record più recente (per data_scadenza) di un certo tipo, o None."""
+    candidati = [r for r in lista if r.get("tipo") == tipo]
+    if not candidati:
+        return None
+    return sorted(candidati, key=lambda r: r.get("data_scadenza") or "", reverse=True)[0]
+
+
+righe_tabella = []
+for c in conferitori:
+    sanitari_c = sanitari_by_conf.get(c["id"], [])
+    docs_c = docs_by_conf.get(c["id"], [])
+    tipi_c = ", ".join([t["tipo_latte"] for t in c.get("conferitori_tipi_latte", [])]) or "-"
+
+    brucellosi = _ultimo_per_tipo(sanitari_c, "brucellosi")
+    tubercolosi = _ultimo_per_tipo(sanitari_c, "tubercolosi")
+    leucosi = _ultimo_per_tipo(sanitari_c, "leucosi")
+    carica_batt = _ultimo_per_tipo(sanitari_c, "carica_batterica")
+    doc_principale = docs_c[0] if docs_c else None
+
+    def _data_fmt(rec):
+        sc = rec.get("data_scadenza") if rec else None
+        return _dt.date.fromisoformat(sc).strftime("%d/%m/%Y") if sc else "-"
+
+    righe_tabella.append({
+        "Denominazione": c["ragione_sociale"],
+        "Codice stalla / Bollo CE": c.get("codice_stalla") or c.get("bollo_ce") or "-",
+        "Indirizzo": c.get("sede_operativa") or c.get("sede_legale") or "-",
+        "P.IVA": c.get("piva") or "-",
+        "Prodotto/i fornito/i": tipi_c,
+        "Scad. Brucellosi": _data_fmt(brucellosi),
+        "Scad. Tubercolosi": _data_fmt(tubercolosi),
+        "Scad. Leucosi": _data_fmt(leucosi),
+        "Laboratorio (carica batterica)": (carica_batt or {}).get("laboratorio") or "-",
+        "Scad. autocertificazione/contratto": _data_fmt(doc_principale),
+    })
+
+if righe_tabella:
+    st.dataframe(righe_tabella, hide_index=True, use_container_width=True)
+    try:
+        df_conferitori = pd.DataFrame(righe_tabella)
+        csv_bytes = df_conferitori.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        st.download_button(
+            "🖨️ Esporta/Stampa tabella conferitori (CSV compatibile Excel)",
+            data=csv_bytes, file_name="tabella_conferitori.csv", mime="text/csv",
+        )
+    except Exception as e:
+        st.error(f"Errore nella generazione del CSV: {e}")
+else:
+    st.info("Nessun conferitore da mostrare.")
