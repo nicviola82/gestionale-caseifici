@@ -1,3 +1,87 @@
+
+Claude sta rispondendo
+
+Mappatura_Registro.xlsx
+xlsx
+
+
+modifiche programma.docx
+docx
+
+
+Query 1.docx
+docx
+
+
+gestionale-caseifici-main (9).zip
+zip
+
+richiaa HACCP. controlla tutto il programma del fail Zip attentamente, vedi se ci sono errori. controlla tutte le query collegate al programma e vedi se ci sono errori. poi ti ho fatto le modifiche chesi devono fare al programma e il foglio registro ti ho fatto una mappatura iniziale del programma. fammi sapere se è tutto chiaro.
+
+
+Eseguiti 2 comandi, una memoria letta
+Eseguiti 2 comandi, una memoria letta
+Tutti i file Python compilano senza errori. Ora controllo i documenti con le modifiche richieste e la mappatura.
+
+
+Eseguiti 9 comandi, ha visualizzato 2 file · 1 nota
+Eseguiti 9 comandi, ha visualizzato 2 file · 1 nota
+Ho controllato tutto: lo zip del programma, i file docx e il file Excel di mappatura. Ecco il quadro completo.
+
+1. Zip del programma — integrità del codice
+Ho estratto gestionale-caseifici-main__9_.zip e fatto il check di compilazione su tutti i 16 file Python (root + pages/): compilano tutti senza errori di sintassi.
+
+Ho però trovato un bug logico reale, non solo di sintassi, in pages/6_Registro.py (righe 419-423):
+
+python
+for label, t, col in [("R.Buf","bufala",None),("R.Vacc","vaccino",None)]:
+    if (label == "R.Buf" and usa_buf) or (label == "R.Vacc" and usa_vacc):
+        tot_p = sum(kg_prod(p, ds) for p in prodotti_declassati + prodotti_mista + prodotti_vaccina)
+R.Buf e R.Vacc usano lo stesso identico numeratore (somma di declassati + mista + vaccina), cambia solo il denominatore (Tr.Buf o Tr.Vacc). Questo è esattamente il problema che segnali tu stesso nella mappatura Excel alla riga di R.Buf ("deve essere considerato solo i prodotti di bufala... mozzarella, caciocavallo e cagliata di bufala"): oggi la resa bufala viene "sporcata" dalla produzione vaccina/mista, e i prodotti cagliata di bufala non vengono contati affatto.
+
+Ho trovato anche una probabile causa del tuo "non mi trovo con i calcoli" su Ref.MBC: in registro_calc.py, la funzione che scala il latte DOP dalla giacenza (consumo_extra_dop) tratta qualsiasi prodotto DOP diverso dalla Mozzarella di Bufala Campana (quindi anche la Ricotta DOP) come se consumasse latte DOP secondo la stessa resa della MBC — mentre la Ricotta si fa dal siero, non dal latte, tranne quando imposti tu una percentuale in Impostazioni Fisse (che infatti esiste già come colonna RBC.Buf, ma solo per bufala non-DOP, non per il DOP). Quindi oggi la Ricotta DOP riduce il Ref.MBC anche quando non dovrebbe.
+
+2. Query_1.docx
+Non è un elenco di query "da controllare per errori" — è lo storico cronologico di tutte le migrazioni SQL fatte finora sul database (query1→query18). L'ho letto tutto: è internamente coerente (i bigint sono usati ovunque correttamente, le constraint successive sostituiscono correttamente quelle precedenti). Confermo quanto già verificato: vendite_latte_destinatari e smaltimento_siero sono nel documento come migrazioni ancora da eseguire su Supabase — nessun errore SQL trovato.
+
+3. Mappatura_Registro.xlsx — le tue correzioni
+Ho letto tutte le tue note in colonna E/F. Riassumo cosa cambia, evidenziando dove ho bisogno di una tua decisione prima di toccare il codice:
+
+Ref.MBC/Ref.Buf/Ref.Vacc: la formula che scrivi tu (giacenza = giacenza ieri + ritirato ieri - trasformato ieri - venduto/congelato ieri) è concettualmente la stessa logica già implementata, ma descritta come valore di apertura invece che di chiusura del giorno. Devo capire: la colonna Ref. in tabella deve mostrare la giacenza a inizio giornata o a fine giornata? Oggi mostra la chiusura.
+Refrigerato bufala/vaccino deve sottrarre anche il latte usato per la mista — non lo fa oggi, va aggiunto.
+Ricotta (DOP e non-DOP): confermi che consuma latte SOLO se imposti tu una % in Impostazioni Fisse (per il DOP questa impostazione non esiste ancora, va creata sul modello di quella già presente per il non-DOP).
+R.Buf: da correggere per contare solo mozzarella bufala + caciocavallo bufala + cagliata bufala (bug confermato sopra).
+VaccVend: deve diventare sola lettura, alimentata dal foglio vendite (oggi è editabile direttamente nel Registro).
+D.<nome>nD → "mozBUF": chiarisci che non è latte "declassato" ma prodotto declassato — va reso più visibile quanto MBC è stato declassato.
+Alcune abbreviazioni da rinominare (%MBC, %BUF, %VACC, MBCdelatt., CongMBC, ecc.) — semplice rename, nessun problema.
+Riga 31 "#NAME?" è un artefatto del vecchio foglio Excel, non un errore nel programma Python attuale.
+4. modifiche_programma.docx — le modifiche richieste
+Tutte chiare tranne due punti tecnici da verificare prima di prometterti che si possono fare:
+
+Colonna data "bloccata" scorrendo a destra, su tutte le griglie: è una feature di pinning colonne. Streamlit (>=1.38, versione che usi) ha un supporto limitato/parziale per questo nelle tabelle editabili — vanno testate le opzioni disponibili, non è garantito al 100% che si comporti come un vero "freeze" di Excel.
+Prodotti → vendita a terzi con N destinatari e colonne rinominabili manualmente: cambia lo schema (oggi è fissa: 1 colonna v.dir + 1 colonna v.ind). Fattibile, ma è una modifica di struttura dati, non solo di interfaccia — va vista insieme al Registro perché tocca come si calcola R.Buf/R.Vacc.
+Il resto (bottone "nuovo caseificio" al posto della pagina Anagrafica, refrigeranti spostati in Impostazioni Fisse, export conferitori con scadenze, modifica/elimina su congelamento e vendite, foglio "tr" da rifare da zero) è chiaro e non ha ambiguità.
+
+Priorità che hai indicato: 1) Registro, 2) griglia Produzioni (punto 5), poi il resto. Mi sembra tutto chiaro per partire dal Registro — vuoi che ti proponga prima le risposte alle formule ambigue (apertura vs chiusura, ricotta DOP) così le fissiamo insieme, o preferisci che proceda con le mie interpretazioni più logiche e te le mostro già implementate?
+
+qualsiasi modica che i deve fare riscrivi l'intera pagina su github e io cancello tutto e incollo quello che mi mandi tu. procedi con le correzzioni
+
+
+Eseguiti 2 comandi
+Eseguiti 2 comandi
+Vai
+
+
+Ha visualizzato 5 file, 3 file modificati, eseguito un comando
+Ha visualizzato 5 file, 3 file modificati, eseguito un comando
+Ora applico la stessa correzione della Ricotta a registro_calc.py (usato dai fogli stampabili MBC/RBC/tr e dal Siero):
+
+
+File modificato, eseguito un comando, file visualizzato · 1 nota
+File modificato, eseguito un comando, file visualizzato · 1 nota
+registro_calc.py — sostituisci tutto il file su GitHub con questo:
+
+python
 # ============================================================
 # MODULO: REGISTRO_CALC
 # Logica di calcolo condivisa del Registro (giacenza, trasformato,
@@ -135,8 +219,11 @@ def calcola_stato_completo(client, caseificio_id, fino_a_data):
         return (prod / trasf) if trasf > 0 else None
 
     # CORREZIONE: su tutta la storia disponibile in prod_map, non solo sul periodo aperto in pagina
+    # ATTENZIONE: la Ricotta DOP va esclusa - si fa dal siero, non consuma latte
+    # bufala_dop secondo la resa MBC (vedi stessa nota in pages/6_Registro.py)
     consumo_extra_dop = {}
-    for p in prodotti_dop_altri + prodotti_declassati:
+    prodotti_dop_altri_no_ricotta = [p for p in prodotti_dop_altri if "ricotta" not in p["nome"].lower()]
+    for p in prodotti_dop_altri_no_ricotta + prodotti_declassati:
         for (prodotto_id, ds), rec in prod_map.items():
             if prodotto_id != p["id"]:
                 continue
@@ -219,3 +306,25 @@ def trasformato_totale(client, caseificio_id, data):
 def extra_dop_consumato(client, caseificio_id, data):
     stato = calcola_stato_completo(client, caseificio_id, data)
     return stato["consumo_extra_dop"].get(("bufala_dop", str(data)), 0.0)
+Ora ti mando pages/6_Registro.py completo (è più lungo, arriva nel prossimo messaggio).
+
+Ref.MBC/Ref.Buf/Ref.Vacc: a fine giornata per questo ho bisogno di vedere anche ref di fine giornata dell'utimo giorno del periodo che sto lavorando. Refrigerato bufala/vaccino deve sottrarre anche il latte usato per la mista: si se lavoro latte di bufala  deve essere sottratto nel latte refrigerato di bufala e analogamente il vaccino lavorato deve essere sottratto al latte refrigerato vaccino. Ricotta (DOP e non-DOP): si confermo, solo che mentre per la dop già in impostazioni fisse indichiamo la % di latte che usiamo per la non Dop questo parametro non inserito da nessuna parte. D.<nome>nD → "mozBUF non ho capito bene cosa vuoi sapere, si io lavoro il latte di bufala tutto DOP e oltre alla mozzarella DOP produco anche mozzarella non DOP. quindi declasso il prodotto, il latte è sempre DOP.Però per me è importante consocere anche la quantità di latte Dop usato per produrre mozzarella non DOP.
+
+
+Districando
+Districando
+
+Comando eseguito
+
+Letto 6_Registro.py
+
+
+Vuoi ricevere una notifica quando Claude risponde?
+
+
+
+Claude è un'AI e può commettere errori. Verifica le risposte.
+
+
+
+
