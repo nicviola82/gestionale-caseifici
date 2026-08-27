@@ -79,6 +79,9 @@ CAMPI = {
     "perc_latte_bufala_rbc": {
         "label": "% aggiunta latte di bufala (RBC, max 6%)", "tipo": "numero", "gruppo": "RBC",
     },
+    "perc_latte_bufala_ricotta_nondop": {
+        "label": "% aggiunta latte di bufala (Ricotta NON-DOP)", "tipo": "numero", "gruppo": "RBC",
+    },
     "perc_panna_fresca_rbc": {
         "label": "% aggiunta panna fresca (RBC, max 5%)", "tipo": "numero", "gruppo": "RBC",
     },
