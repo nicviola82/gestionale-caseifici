@@ -1,87 +1,3 @@
-
-Claude sta rispondendo
-
-Mappatura_Registro.xlsx
-xlsx
-
-
-modifiche programma.docx
-docx
-
-
-Query 1.docx
-docx
-
-
-gestionale-caseifici-main (9).zip
-zip
-
-richiaa HACCP. controlla tutto il programma del fail Zip attentamente, vedi se ci sono errori. controlla tutte le query collegate al programma e vedi se ci sono errori. poi ti ho fatto le modifiche chesi devono fare al programma e il foglio registro ti ho fatto una mappatura iniziale del programma. fammi sapere se è tutto chiaro.
-
-
-Eseguiti 2 comandi, una memoria letta
-Eseguiti 2 comandi, una memoria letta
-Tutti i file Python compilano senza errori. Ora controllo i documenti con le modifiche richieste e la mappatura.
-
-
-Eseguiti 9 comandi, ha visualizzato 2 file · 1 nota
-Eseguiti 9 comandi, ha visualizzato 2 file · 1 nota
-Ho controllato tutto: lo zip del programma, i file docx e il file Excel di mappatura. Ecco il quadro completo.
-
-1. Zip del programma — integrità del codice
-Ho estratto gestionale-caseifici-main__9_.zip e fatto il check di compilazione su tutti i 16 file Python (root + pages/): compilano tutti senza errori di sintassi.
-
-Ho però trovato un bug logico reale, non solo di sintassi, in pages/6_Registro.py (righe 419-423):
-
-python
-for label, t, col in [("R.Buf","bufala",None),("R.Vacc","vaccino",None)]:
-    if (label == "R.Buf" and usa_buf) or (label == "R.Vacc" and usa_vacc):
-        tot_p = sum(kg_prod(p, ds) for p in prodotti_declassati + prodotti_mista + prodotti_vaccina)
-R.Buf e R.Vacc usano lo stesso identico numeratore (somma di declassati + mista + vaccina), cambia solo il denominatore (Tr.Buf o Tr.Vacc). Questo è esattamente il problema che segnali tu stesso nella mappatura Excel alla riga di R.Buf ("deve essere considerato solo i prodotti di bufala... mozzarella, caciocavallo e cagliata di bufala"): oggi la resa bufala viene "sporcata" dalla produzione vaccina/mista, e i prodotti cagliata di bufala non vengono contati affatto.
-
-Ho trovato anche una probabile causa del tuo "non mi trovo con i calcoli" su Ref.MBC: in registro_calc.py, la funzione che scala il latte DOP dalla giacenza (consumo_extra_dop) tratta qualsiasi prodotto DOP diverso dalla Mozzarella di Bufala Campana (quindi anche la Ricotta DOP) come se consumasse latte DOP secondo la stessa resa della MBC — mentre la Ricotta si fa dal siero, non dal latte, tranne quando imposti tu una percentuale in Impostazioni Fisse (che infatti esiste già come colonna RBC.Buf, ma solo per bufala non-DOP, non per il DOP). Quindi oggi la Ricotta DOP riduce il Ref.MBC anche quando non dovrebbe.
-
-2. Query_1.docx
-Non è un elenco di query "da controllare per errori" — è lo storico cronologico di tutte le migrazioni SQL fatte finora sul database (query1→query18). L'ho letto tutto: è internamente coerente (i bigint sono usati ovunque correttamente, le constraint successive sostituiscono correttamente quelle precedenti). Confermo quanto già verificato: vendite_latte_destinatari e smaltimento_siero sono nel documento come migrazioni ancora da eseguire su Supabase — nessun errore SQL trovato.
-
-3. Mappatura_Registro.xlsx — le tue correzioni
-Ho letto tutte le tue note in colonna E/F. Riassumo cosa cambia, evidenziando dove ho bisogno di una tua decisione prima di toccare il codice:
-
-Ref.MBC/Ref.Buf/Ref.Vacc: la formula che scrivi tu (giacenza = giacenza ieri + ritirato ieri - trasformato ieri - venduto/congelato ieri) è concettualmente la stessa logica già implementata, ma descritta come valore di apertura invece che di chiusura del giorno. Devo capire: la colonna Ref. in tabella deve mostrare la giacenza a inizio giornata o a fine giornata? Oggi mostra la chiusura.
-Refrigerato bufala/vaccino deve sottrarre anche il latte usato per la mista — non lo fa oggi, va aggiunto.
-Ricotta (DOP e non-DOP): confermi che consuma latte SOLO se imposti tu una % in Impostazioni Fisse (per il DOP questa impostazione non esiste ancora, va creata sul modello di quella già presente per il non-DOP).
-R.Buf: da correggere per contare solo mozzarella bufala + caciocavallo bufala + cagliata bufala (bug confermato sopra).
-VaccVend: deve diventare sola lettura, alimentata dal foglio vendite (oggi è editabile direttamente nel Registro).
-D.<nome>nD → "mozBUF": chiarisci che non è latte "declassato" ma prodotto declassato — va reso più visibile quanto MBC è stato declassato.
-Alcune abbreviazioni da rinominare (%MBC, %BUF, %VACC, MBCdelatt., CongMBC, ecc.) — semplice rename, nessun problema.
-Riga 31 "#NAME?" è un artefatto del vecchio foglio Excel, non un errore nel programma Python attuale.
-4. modifiche_programma.docx — le modifiche richieste
-Tutte chiare tranne due punti tecnici da verificare prima di prometterti che si possono fare:
-
-Colonna data "bloccata" scorrendo a destra, su tutte le griglie: è una feature di pinning colonne. Streamlit (>=1.38, versione che usi) ha un supporto limitato/parziale per questo nelle tabelle editabili — vanno testate le opzioni disponibili, non è garantito al 100% che si comporti come un vero "freeze" di Excel.
-Prodotti → vendita a terzi con N destinatari e colonne rinominabili manualmente: cambia lo schema (oggi è fissa: 1 colonna v.dir + 1 colonna v.ind). Fattibile, ma è una modifica di struttura dati, non solo di interfaccia — va vista insieme al Registro perché tocca come si calcola R.Buf/R.Vacc.
-Il resto (bottone "nuovo caseificio" al posto della pagina Anagrafica, refrigeranti spostati in Impostazioni Fisse, export conferitori con scadenze, modifica/elimina su congelamento e vendite, foglio "tr" da rifare da zero) è chiaro e non ha ambiguità.
-
-Priorità che hai indicato: 1) Registro, 2) griglia Produzioni (punto 5), poi il resto. Mi sembra tutto chiaro per partire dal Registro — vuoi che ti proponga prima le risposte alle formule ambigue (apertura vs chiusura, ricotta DOP) così le fissiamo insieme, o preferisci che proceda con le mie interpretazioni più logiche e te le mostro già implementate?
-
-qualsiasi modica che i deve fare riscrivi l'intera pagina su github e io cancello tutto e incollo quello che mi mandi tu. procedi con le correzzioni
-
-
-Eseguiti 2 comandi
-Eseguiti 2 comandi
-Vai
-
-
-Ha visualizzato 5 file, 3 file modificati, eseguito un comando
-Ha visualizzato 5 file, 3 file modificati, eseguito un comando
-Ora applico la stessa correzione della Ricotta a registro_calc.py (usato dai fogli stampabili MBC/RBC/tr e dal Siero):
-
-
-File modificato, eseguito un comando, file visualizzato · 1 nota
-File modificato, eseguito un comando, file visualizzato · 1 nota
-registro_calc.py — sostituisci tutto il file su GitHub con questo:
-
-python
 # ============================================================
 # MODULO: REGISTRO_CALC
 # Logica di calcolo condivisa del Registro (giacenza, trasformato,
@@ -143,7 +59,8 @@ def _prodotti_dop_altri_e_declassati(prodotti, prodotto_primario_dop):
                 and not e_congelato(p) and not e_cagliata(p) and p is not prodotto_primario_dop)
     dop_altri = [p for p in prodotti if p["is_dop"] and p is not prodotto_primario_dop]
     declassati = [p for p in prodotti if e_declassata(p)]
-    return dop_altri, declassati
+    mista = [p for p in prodotti if e_mista(p)]
+    return dop_altri, declassati, mista
 
 
 def calcola_stato_completo(client, caseificio_id, fino_a_data):
@@ -195,7 +112,7 @@ def calcola_stato_completo(client, caseificio_id, fino_a_data):
             congelato_map[(orig, m["data"])] = congelato_map.get((orig, m["data"]), 0) + float(m["kg"])
 
     prodotti, prodotto_primario_dop = _prodotti_e_primario_dop(client, caseificio_id)
-    prodotti_dop_altri, prodotti_declassati = _prodotti_dop_altri_e_declassati(prodotti, prodotto_primario_dop)
+    prodotti_dop_altri, prodotti_declassati, prodotti_mista = _prodotti_dop_altri_e_declassati(prodotti, prodotto_primario_dop)
     prodotto_ids = [p["id"] for p in prodotti]
 
     produzioni_storia = (
@@ -238,9 +155,99 @@ def calcola_stato_completo(client, caseificio_id, fino_a_data):
                 if r and r > 0:
                     consumo_extra_dop[("bufala_dop", ds)] = consumo_extra_dop.get(("bufala_dop", ds), 0) + kg_dop / r
 
+    # MOZZARELLA MISTA -> consumo latte bufala/vaccino (aggiunto 27/08, per
+    # allineare questo modulo condiviso a pages/6_Registro.py - stessa logica:
+    # il kg di ciascun tipo di latte usato nella mista si legge dalle righe
+    # produzione_origine con origine 'bufala'/'vaccino' della produzione mista
+    # di quel giorno, editate dall'utente nel Registro).
+    consumo_mista_buf = {}
+    consumo_mista_vacc = {}
+    for p in prodotti_mista:
+        for (prodotto_id, ds), rec in prod_map.items():
+            if prodotto_id != p["id"]:
+                continue
+            ov_b = origini_m.get(rec["id"], {}).get("bufala")
+            kg_b = float(ov_b["kg"]) if ov_b and ov_b.get("kg") else 0.0
+            if kg_b > 0:
+                consumo_mista_buf[ds] = consumo_mista_buf.get(ds, 0) + kg_b
+            ov_v = origini_m.get(rec["id"], {}).get("vaccino")
+            kg_v = float(ov_v["kg"]) if ov_v and ov_v.get("kg") else 0.0
+            if kg_v > 0:
+                consumo_mista_vacc[ds] = consumo_mista_vacc.get(ds, 0) + kg_v
+
+    # RICOTTA (DOP e NON-DOP) -> consumo latte bufala (solo se impostata una
+    # percentuale in Impostazioni Fisse) - aggiunto 27/08, stessa logica di
+    # pages/6_Registro.py: di regola la Ricotta si fa dal siero e non consuma
+    # latte; se è impostata una % di latte di bufala aggiunto, quella quota va
+    # scalata dal bucket "bufala" non-DOP (mai da bufala_dop).
+    def _storico_percentuale(campo):
+        return (
+            client.table("impostazioni_registro")
+            .select("data_da, valore")
+            .eq("caseificio_id", caseificio_id)
+            .eq("campo", campo)
+            .order("data_da")
+            .execute()
+            .data
+        )
+
+    def _percentuale_alla_data(storico, data_str):
+        valore = 0.0
+        for r in storico:
+            if r["data_da"] <= data_str:
+                try:
+                    valore = float(r["valore"])
+                except (TypeError, ValueError):
+                    valore = 0.0
+            else:
+                break
+        return valore
+
+    perc_bufala_rbc_storico = _storico_percentuale("perc_latte_bufala_rbc")
+    perc_bufala_ricotta_nondop_storico = _storico_percentuale("perc_latte_bufala_ricotta_nondop")
+
+    ricotta_dop_prodotti = [p for p in prodotti if p["is_dop"] and "ricotta di bufala campana dop" in p["nome"].lower()]
+    ricotta_nondop_prodotti = [p for p in prodotti if not p["is_dop"] and "ricotta" in p["nome"].lower()]
+
+    def _kg_prodotto_per_giorno(prodotti_list):
+        out = {}
+        for p in prodotti_list:
+            for (prodotto_id, ds), rec in prod_map.items():
+                if prodotto_id != p["id"]:
+                    continue
+                out[ds] = out.get(ds, 0) + float(rec.get("kg_totale") or 0)
+        return out
+
+    def _resa_media(prodotti_list):
+        rese = [float(p["resa_automatica_percent"]) for p in prodotti_list if p.get("resa_automatica_percent")]
+        return (sum(rese) / len(rese)) if rese else None
+
+    ricotta_dop_per_giorno = _kg_prodotto_per_giorno(ricotta_dop_prodotti)
+    ricotta_nondop_per_giorno = _kg_prodotto_per_giorno(ricotta_nondop_prodotti)
+    resa_ricotta_dop = _resa_media(ricotta_dop_prodotti)
+    resa_ricotta_nondop = _resa_media(ricotta_nondop_prodotti)
+
+    ricotta_bufala_map = {}
+    date_ricotta = sorted(set(list(ricotta_dop_per_giorno.keys()) + list(ricotta_nondop_per_giorno.keys())))
+    for ds in date_ricotta:
+        tot_oggi = 0.0
+        if resa_ricotta_dop:
+            perc = _percentuale_alla_data(perc_bufala_rbc_storico, ds)
+            kg_oggi = ricotta_dop_per_giorno.get(ds, 0)
+            if perc > 0 and kg_oggi > 0:
+                tot_oggi += perc / 100 * (kg_oggi / (resa_ricotta_dop / 100))
+        if resa_ricotta_nondop:
+            perc = _percentuale_alla_data(perc_bufala_ricotta_nondop_storico, ds)
+            kg_oggi = ricotta_nondop_per_giorno.get(ds, 0)
+            if perc > 0 and kg_oggi > 0:
+                tot_oggi += perc / 100 * (kg_oggi / (resa_ricotta_nondop / 100))
+        if tot_oggi > 0:
+            ricotta_bufala_map[ds] = round(tot_oggi)
+
     tutte_le_date = sorted(set(
         [d for (_, d) in raccolto.keys()] + [d for (_, d) in trasformato_map.keys()]
         + [d for (_, d) in venduto_map.keys()] + [d for (_, d) in consumo_extra_dop.keys()]
+        + list(consumo_mista_buf.keys()) + list(consumo_mista_vacc.keys()) + list(ricotta_bufala_map.keys())
     ))
 
     giacenza_per_tipo = {t: 0.0 for t in TIPI_GIAC}
@@ -253,7 +260,10 @@ def calcola_stato_completo(client, caseificio_id, fino_a_data):
                       + consumo_extra_dop.get((t, d), 0)
                       + venduto_map.get((t, d), 0)
                       + congelato_map.get((t if t in ("bufala_dop", "bufala") else "bufala", d), 0)
-                      * (1 if t in ("bufala_dop", "bufala") else 0))
+                      * (1 if t in ("bufala_dop", "bufala") else 0)
+                      + (ricotta_bufala_map.get(d, 0) if t == "bufala" else 0)
+                      + (consumo_mista_buf.get(d, 0) if t == "bufala" else 0)
+                      + (consumo_mista_vacc.get(d, 0) if t == "vaccino" else 0))
             giacenza_per_tipo[t] = giacenza_per_tipo[t] + entrata - uscita
 
     return {
@@ -262,6 +272,9 @@ def calcola_stato_completo(client, caseificio_id, fino_a_data):
         "venduto_map": venduto_map,
         "congelato_map": congelato_map,
         "consumo_extra_dop": consumo_extra_dop,
+        "consumo_mista_buf": consumo_mista_buf,
+        "consumo_mista_vacc": consumo_mista_vacc,
+        "ricotta_bufala_map": ricotta_bufala_map,
         "giacenza_apertura_per_giorno": giacenza_apertura_per_giorno,
         "prodotto_primario_dop": prodotto_primario_dop,
         "prod_map": prod_map,
@@ -282,7 +295,10 @@ def giacenza_chiusura(client, caseificio_id, tipo_latte, data):
               + stato["consumo_extra_dop"].get((tipo_latte, ds), 0)
               + stato["venduto_map"].get((tipo_latte, ds), 0)
               + stato["congelato_map"].get((tipo_latte if tipo_latte in ("bufala_dop", "bufala") else "bufala", ds), 0)
-              * (1 if tipo_latte in ("bufala_dop", "bufala") else 0))
+              * (1 if tipo_latte in ("bufala_dop", "bufala") else 0)
+              + (stato["ricotta_bufala_map"].get(ds, 0) if tipo_latte == "bufala" else 0)
+              + (stato["consumo_mista_buf"].get(ds, 0) if tipo_latte == "bufala" else 0)
+              + (stato["consumo_mista_vacc"].get(ds, 0) if tipo_latte == "vaccino" else 0))
     return apertura_val + entrata - uscita
 
 
@@ -306,25 +322,3 @@ def trasformato_totale(client, caseificio_id, data):
 def extra_dop_consumato(client, caseificio_id, data):
     stato = calcola_stato_completo(client, caseificio_id, data)
     return stato["consumo_extra_dop"].get(("bufala_dop", str(data)), 0.0)
-Ora ti mando pages/6_Registro.py completo (è più lungo, arriva nel prossimo messaggio).
-
-Ref.MBC/Ref.Buf/Ref.Vacc: a fine giornata per questo ho bisogno di vedere anche ref di fine giornata dell'utimo giorno del periodo che sto lavorando. Refrigerato bufala/vaccino deve sottrarre anche il latte usato per la mista: si se lavoro latte di bufala  deve essere sottratto nel latte refrigerato di bufala e analogamente il vaccino lavorato deve essere sottratto al latte refrigerato vaccino. Ricotta (DOP e non-DOP): si confermo, solo che mentre per la dop già in impostazioni fisse indichiamo la % di latte che usiamo per la non Dop questo parametro non inserito da nessuna parte. D.<nome>nD → "mozBUF non ho capito bene cosa vuoi sapere, si io lavoro il latte di bufala tutto DOP e oltre alla mozzarella DOP produco anche mozzarella non DOP. quindi declasso il prodotto, il latte è sempre DOP.Però per me è importante consocere anche la quantità di latte Dop usato per produrre mozzarella non DOP.
-
-
-Districando
-Districando
-
-Comando eseguito
-
-Letto 6_Registro.py
-
-
-Vuoi ricevere una notifica quando Claude risponde?
-
-
-
-Claude è un'AI e può commettere errori. Verifica le risposte.
-
-
-
-
