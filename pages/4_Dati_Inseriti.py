@@ -80,7 +80,8 @@ mappa_esistenti = {(e["conferitore_id"], e["data"]): e for e in esistenti}
 # se presente (altrimenti la ragione sociale), come richiesto - prima usava sempre
 # la ragione sociale per intero. Le chiavi interne delle colonne usano l'id del
 # conferitore (mai il nome), per evitare collisioni se due conferitori hanno lo
-# stesso nome o la stessa sigla. Ordine sotto-colonne: DDT poi KG (confermato).
+# stesso nome o la stessa sigla. Ordine sotto-colonne: DDT poi KG (confermato
+# di nuovo il 27/08 - tornati a questo ordine su richiesta esplicita utente).
 # ------------------------------------------------------------
 st.subheader("Griglia conferimenti")
 st.caption("Modifica le celle direttamente. Puoi copiare/incollare piu' valori insieme (anche da Excel). Ricorda di premere 'Salva conferimenti' in fondo.")
