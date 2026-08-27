@@ -91,6 +91,8 @@ def e_mista(p): return "mista" in p["nome"].lower()
 def e_vaccina(p): return "vaccin" in p["nome"].lower() and "mista" not in p["nome"].lower()
 def e_congelato(p): return "congelat" in p["nome"].lower()
 def e_cagliata(p): return "cagliata" in p["nome"].lower() or "semilav" in p["nome"].lower()
+def e_cagliata_bufala(p): return e_cagliata(p) and "vaccin" not in p["nome"].lower()
+def e_cagliata_vaccina(p): return e_cagliata(p) and "vaccin" in p["nome"].lower()
 def e_declassata(p):
     return (not p["is_dop"] and not e_mista(p) and not e_vaccina(p)
             and not e_congelato(p) and not e_cagliata(p)
@@ -189,7 +191,13 @@ def resa_dop_giorno(ds):
     return (prod / trasf) if trasf > 0 else None
 
 consumo_extra_dop = {}
-for p in prodotti_dop_altri + prodotti_declassati:
+# ATTENZIONE: la Ricotta DOP va ESCLUSA da questo calcolo generico - ha una
+# logica di consumo latte a parte (blocco RICOTTA piu' sotto, che scala dal
+# bucket bufala NON-DOP solo se impostata una percentuale in Impostazioni
+# Fisse). Includerla anche qui la conterebbe due volte e scalerebbe latte
+# bufala_dop che la Ricotta normalmente non consuma (si fa dal siero).
+prodotti_dop_altri_no_ricotta = [p for p in prodotti_dop_altri if "ricotta" not in p["nome"].lower()]
+for p in prodotti_dop_altri_no_ricotta + prodotti_declassati:
     for (prodotto_id, ds), rec in prod_map.items():
         if prodotto_id != p["id"]: continue
         tot = float(rec["kg_totale"] or 0)
@@ -203,15 +211,44 @@ for p in prodotti_dop_altri + prodotti_declassati:
                 consumo_extra_dop[("bufala_dop", ds)] = consumo_extra_dop.get(("bufala_dop", ds), 0) + kg_dop / r
 
 # ------------------------------------------------------------
-# BLOCCO: RICOTTA -> CONSUMO LATTE BUFALA (SOLO SE IMPOSTATO)
-# Di regola la Ricotta NON entra nel conteggio latte (si fa con il siero, un
-# sottoprodotto già contato altrove tramite il foglio Siero). ECCEZIONE: se in
-# Impostazioni Fisse è indicata una percentuale di latte di bufala aggiunto
-# alla ricotta (perc_latte_bufala_rbc), quella quota è latte VERO consumato e
-# va scalata dalla giacenza bufala come un'uscita, esattamente come un
-# trasformato. NOTA: si scala dal bucket "bufala" non-DOP (non bufala_dop),
-# perché il campo Impostazioni Fisse dice genericamente "latte di bufala" - se
-# invece dev'essere DOP specificamente, va corretto qui.
+# BLOCCO: MOZZARELLA MISTA -> CONSUMO LATTE BUFALA E VACCINO
+# La Mozzarella Mista si fa mescolando latte di bufala E latte vaccino nella
+# stessa lavorazione. L'utente inserisce ogni giorno quanto latte di CIASCUN
+# tipo è entrato in quella lavorazione (colonne Mis.<nome>Buf / Mis.<nome>Vac
+# nella tabella) e quella quota va sottratta dal refrigerato del tipo
+# corrispondente (aggiunto 27/08 su richiesta utente - prima il latte per la
+# mista non veniva scalato da nessuna giacenza).
+# RICHIEDE la migrazione che aggiunge 'bufala'/'vaccino' ai valori ammessi
+# della colonna produzione_origine.origine (vedi messaggio di consegna).
+# Calcolato su TUTTA LA STORIA, stesso motivo del consumo extra DOP sopra.
+# ------------------------------------------------------------
+consumo_mista_buf = {}
+consumo_mista_vacc = {}
+for p in prodotti_mista:
+    for (prodotto_id, ds), rec in prod_map.items():
+        if prodotto_id != p["id"]: continue
+        ov_b = origini_m.get(rec["id"], {}).get("bufala")
+        kg_b = float(ov_b["kg"]) if ov_b and ov_b.get("kg") else 0.0
+        if kg_b > 0:
+            consumo_mista_buf[ds] = consumo_mista_buf.get(ds, 0) + kg_b
+        ov_v = origini_m.get(rec["id"], {}).get("vaccino")
+        kg_v = float(ov_v["kg"]) if ov_v and ov_v.get("kg") else 0.0
+        if kg_v > 0:
+            consumo_mista_vacc[ds] = consumo_mista_vacc.get(ds, 0) + kg_v
+
+# ------------------------------------------------------------
+# BLOCCO: RICOTTA (DOP e NON-DOP) -> CONSUMO LATTE BUFALA (SOLO SE IMPOSTATO)
+# Di regola la Ricotta (DOP o non-DOP) NON entra nel conteggio latte (si fa
+# con il siero, un sottoprodotto già contato altrove tramite il foglio Siero).
+# ECCEZIONE: se in Impostazioni Fisse è indicata una percentuale di latte di
+# bufala aggiunto alla ricotta, quella quota è latte VERO consumato e va
+# scalata dalla giacenza bufala come un'uscita, esattamente come un
+# trasformato. Due impostazioni distinte, stesso bucket di destinazione:
+#   - perc_latte_bufala_rbc            -> per la Ricotta di Bufala Campana DOP
+#   - perc_latte_bufala_ricotta_nondop -> per la Ricotta di bufala NON-DOP
+#     (aggiunta 27/08 su richiesta utente: prima esisteva solo per la DOP)
+# NOTA: entrambe scalano dal bucket "bufala" non-DOP (non bufala_dop), perché
+# il latte aggiunto è genericamente "latte di bufala" fresco, non DOP.
 # NOTA PRESTAZIONI: poche query TOTALI per l'intero periodo (mai una query per
 # ogni singolo giorno, che su un periodo lungo renderebbe la pagina lentissima
 # - stesso principio già seguito in siero.py).
@@ -222,19 +259,20 @@ tutte_le_date = sorted(set(
     + [d for (_, d) in venduto_map.keys()] + [str(d) for d in date_periodo]
 ))
 
-perc_bufala_rbc_storico = (
-    client.table("impostazioni_registro")
-    .select("data_da, valore")
-    .eq("caseificio_id", caseificio_id)
-    .eq("campo", "perc_latte_bufala_rbc")
-    .order("data_da")
-    .execute()
-    .data
-)
+def carica_perc_storico(campo):
+    return (
+        client.table("impostazioni_registro")
+        .select("data_da, valore")
+        .eq("caseificio_id", caseificio_id)
+        .eq("campo", campo)
+        .order("data_da")
+        .execute()
+        .data
+    )
 
-def perc_bufala_rbc_alla_data(data_str):
+def perc_alla_data(storico, data_str):
     valore = 0.0
-    for r in perc_bufala_rbc_storico:
+    for r in storico:
         if r["data_da"] <= data_str:
             try:
                 valore = float(r["valore"])
@@ -244,7 +282,10 @@ def perc_bufala_rbc_alla_data(data_str):
             break
     return valore
 
-ricotta_prodotti = (
+perc_bufala_rbc_storico = carica_perc_storico("perc_latte_bufala_rbc")
+perc_bufala_ricotta_nondop_storico = carica_perc_storico("perc_latte_bufala_ricotta_nondop")
+
+ricotta_dop_prodotti = (
     client.table("prodotti")
     .select("id, resa_automatica_percent")
     .eq("caseificio_id", caseificio_id)
@@ -253,30 +294,52 @@ ricotta_prodotti = (
     .execute()
     .data
 )
-prodotto_ricotta = ricotta_prodotti[0] if ricotta_prodotti else None
-resa_ricotta = float(prodotto_ricotta["resa_automatica_percent"]) if prodotto_ricotta and prodotto_ricotta.get("resa_automatica_percent") else None
+ricotta_nondop_prodotti = (
+    client.table("prodotti")
+    .select("id, resa_automatica_percent")
+    .eq("caseificio_id", caseificio_id)
+    .eq("is_dop", False)
+    .ilike("nome", "%ricotta%")
+    .execute()
+    .data
+)
 
-ricotta_per_giorno = {}
-if prodotto_ricotta:
+def kg_prodotto_per_giorno(prodotti_list):
+    if not prodotti_list:
+        return {}
+    ids = [p["id"] for p in prodotti_list]
+    out = {}
     for r in (
-        client.table("produzioni")
-        .select("data, kg_totale")
-        .eq("prodotto_id", prodotto_ricotta["id"])
-        .gte("data", str(periodo_inizio))
-        .lte("data", str(periodo_fine))
-        .execute()
-        .data
+        client.table("produzioni").select("data, kg_totale").in_("prodotto_id", ids)
+        .gte("data", str(periodo_inizio)).lte("data", str(periodo_fine)).execute().data
     ):
-        ricotta_per_giorno[r["data"]] = ricotta_per_giorno.get(r["data"], 0) + float(r["kg_totale"] or 0)
+        out[r["data"]] = out.get(r["data"], 0) + float(r["kg_totale"] or 0)
+    return out
+
+def resa_media(prodotti_list):
+    rese = [float(p["resa_automatica_percent"]) for p in prodotti_list if p.get("resa_automatica_percent")]
+    return (sum(rese) / len(rese)) if rese else None
+
+ricotta_dop_per_giorno = kg_prodotto_per_giorno(ricotta_dop_prodotti)
+ricotta_nondop_per_giorno = kg_prodotto_per_giorno(ricotta_nondop_prodotti)
+resa_ricotta_dop = resa_media(ricotta_dop_prodotti)
+resa_ricotta_nondop = resa_media(ricotta_nondop_prodotti)
 
 ricotta_bufala_map = {}
-if resa_ricotta:
-    for d in tutte_le_date:
-        perc = perc_bufala_rbc_alla_data(d)
-        kg_ricotta_oggi = ricotta_per_giorno.get(d, 0)
-        if perc > 0 and kg_ricotta_oggi > 0:
-            kg_siero_lavorato = kg_ricotta_oggi / (resa_ricotta / 100)
-            ricotta_bufala_map[d] = round(perc / 100 * kg_siero_lavorato)
+for d in tutte_le_date:
+    tot_oggi = 0.0
+    if resa_ricotta_dop:
+        perc = perc_alla_data(perc_bufala_rbc_storico, d)
+        kg_oggi = ricotta_dop_per_giorno.get(d, 0)
+        if perc > 0 and kg_oggi > 0:
+            tot_oggi += perc / 100 * (kg_oggi / (resa_ricotta_dop / 100))
+    if resa_ricotta_nondop:
+        perc = perc_alla_data(perc_bufala_ricotta_nondop_storico, d)
+        kg_oggi = ricotta_nondop_per_giorno.get(d, 0)
+        if perc > 0 and kg_oggi > 0:
+            tot_oggi += perc / 100 * (kg_oggi / (resa_ricotta_nondop / 100))
+    if tot_oggi > 0:
+        ricotta_bufala_map[d] = round(tot_oggi)
 
 # giacenza (apertura giorno = chiusura giorno precedente)
 # REGOLA ARROTONDAMENTO: ogni componente (entrata/uscita) va arrotondato a intero
@@ -296,8 +359,15 @@ for d in tutte_le_date:
             + venduto_map.get((t, d), 0)
             + congelato_map.get((t if t in ("bufala_dop", "bufala") else "bufala", d), 0) * (1 if t in ("bufala_dop", "bufala") else 0)
             + (ricotta_bufala_map.get(d, 0) if t == "bufala" else 0)
+            + (consumo_mista_buf.get(d, 0) if t == "bufala" else 0)
+            + (consumo_mista_vacc.get(d, 0) if t == "vaccino" else 0)
         )
         giacenza_per_tipo[t] = giacenza_per_tipo[t] + entrata - uscita
+
+# chiusura dell'ultimo giorno del periodo selezionato (richiesta utente 27/08:
+# la tabella mostra l'APERTURA di ogni giorno - serve anche vedere la
+# CHIUSURA dell'ultimo giorno, cioè la giacenza "a fine periodo")
+giacenza_chiusura_periodo = dict(giacenza_per_tipo)
 
 # ------------------------------------------------------------
 # BLOCCO: QUOTA "EX-CONGELATO" DENTRO LA GIACENZA BUFALA
@@ -357,6 +427,16 @@ def kg_latte_nondop(p, ds):
     ov = origini_m.get(r["id"], {}).get("non_dop")
     return float(ov["kg_latte"]) if ov and ov.get("kg_latte") else 0.0
 
+def latte_dop_prodotto(p, ds):
+    """kg di latte bufala DOP consumato per la quota DOP di un prodotto D./Dec.
+    (tot - nD, convertito in latte con la resa MBC del giorno) - lo stesso
+    valore già usato in consumo_extra_dop per scalare Ref.MBC, reso visibile."""
+    kg_dop = kg_prod(p, ds) - kg_nondop(p, ds)
+    if kg_dop <= 0:
+        return 0
+    r = resa_dop_giorno(ds)
+    return round(kg_dop / r) if r and r > 0 else 0
+
 # ------------------------------------------------------------
 # BLOCCO: COSTRUZIONE TABELLA UNICA
 # ------------------------------------------------------------
@@ -403,12 +483,25 @@ for d in date_periodo:
         riga[f"D.{p['nome'][:6]}Tot"] = tot
         riga[f"D.{p['nome'][:6]}nD"] = kg_nondop(p, ds)  # editabile: quota fatta con non-DOP
         riga[f"D.{p['nome'][:6]}dop"] = round(tot - kg_nondop(p, ds), 1)  # resta col DOP (calcolato)
+        # kg di LATTE bufala DOP effettivamente consumato per la quota DOP di
+        # questo prodotto (tot-nD convertito in latte con la resa del giorno) -
+        # sola lettura, mostra il numero già usato per scalare Ref.MBC, prima
+        # invisibile in tabella (richiesta utente 27/08)
+        riga[f"D.{p['nome'][:6]}LatteDOP"] = latte_dop_prodotto(p, ds)
     for p in prodotti_declassati:
         tot = kg_prod(p, ds)
         riga[f"Dec.{p['nome'][:6]}Tot"] = tot
         riga[f"Dec.{p['nome'][:6]}nD"] = kg_nondop(p, ds)  # editabile: quota fatta con non-DOP
         riga[f"Dec.{p['nome'][:6]}dop"] = round(tot - kg_nondop(p, ds), 1)  # resta col DOP (calcolato)
-    for p in prodotti_mista:       riga[f"Mis.{p['nome'][:6]}"] = kg_prod(p, ds)
+        riga[f"Dec.{p['nome'][:6]}LatteDOP"] = latte_dop_prodotto(p, ds)
+    for p in prodotti_mista:
+        base = f"Mis.{p['nome'][:6]}"
+        rec = prod_map.get((p["id"], ds))
+        riga[f"{base}Tot"] = kg_prod(p, ds)
+        ov_b = origini_m.get(rec["id"], {}).get("bufala") if rec else None
+        ov_v = origini_m.get(rec["id"], {}).get("vaccino") if rec else None
+        riga[f"{base}Buf"] = float(ov_b["kg"]) if ov_b and ov_b.get("kg") else 0.0  # editabile: kg latte bufala usato
+        riga[f"{base}Vac"] = float(ov_v["kg"]) if ov_v and ov_v.get("kg") else 0.0  # editabile: kg latte vaccino usato
     for p in prodotti_vaccina:     riga[f"Vac.{p['nome'][:6]}"] = kg_prod(p, ds)
     for p in prodotti_cong:        riga[f"Con.{p['nome'][:6]}"] = kg_prod(p, ds)
     for p in prodotti_cagliata:    riga[f"Cag.{p['nome'][:6]}"] = kg_prod(p, ds)
@@ -416,9 +509,17 @@ for d in date_periodo:
     # RESA (calcolata, sola lettura)
     r_dop = resa_dop_giorno(ds)
     if usa_dop: riga["R.MBC"] = f"{r_dop*100:.2f}%" if r_dop else "-"
-    for label, t, col in [("R.Buf","bufala",None),("R.Vacc","vaccino",None)]:
+    # BUFALA: mozzarella bufala (declassata) + caciocavallo bufala + cagliata bufala.
+    # VACCINO: mozzarella/caciocavallo vaccina + cagliata vaccina.
+    # (prima usavano lo stesso identico numeratore per entrambe le rese - bug corretto)
+    prodotti_cagliata_buf = [p for p in prodotti_cagliata if e_cagliata_bufala(p)]
+    prodotti_cagliata_vacc = [p for p in prodotti_cagliata if e_cagliata_vaccina(p)]
+    for label, t, prods in [
+        ("R.Buf", "bufala", prodotti_declassati + prodotti_cagliata_buf),
+        ("R.Vacc", "vaccino", prodotti_vaccina + prodotti_cagliata_vacc),
+    ]:
         if (label == "R.Buf" and usa_buf) or (label == "R.Vacc" and usa_vacc):
-            tot_p = sum(kg_prod(p, ds) for p in prodotti_declassati + prodotti_mista + prodotti_vaccina)
+            tot_p = sum(kg_prod(p, ds) for p in prods)
             tot_l = trasf_periodo.get((t, ds), 0)
             riga[label] = f"{tot_p/tot_l*100:.2f}%" if tot_l > 0 else "-"
 
@@ -467,11 +568,13 @@ for nome_fam, cols in famiglie.items():
 prodotti_gruppi = {}
 for p in prodotti_dop_altri:
     base = f"D.{p['nome'][:6]}"
-    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop"]
+    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop", f"{base}LatteDOP"]
 for p in prodotti_declassati:
     base = f"Dec.{p['nome'][:6]}"
-    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop"]
-for p in prodotti_mista:    prodotti_gruppi[f"Mis.{p['nome'][:6]}"] = [f"Mis.{p['nome'][:6]}"]
+    prodotti_gruppi[base] = [f"{base}Tot", f"{base}nD", f"{base}dop", f"{base}LatteDOP"]
+for p in prodotti_mista:
+    base = f"Mis.{p['nome'][:6]}"
+    prodotti_gruppi[base] = [f"{base}Tot", f"{base}Buf", f"{base}Vac"]
 for p in prodotti_vaccina:  prodotti_gruppi[f"Vac.{p['nome'][:6]}"] = [f"Vac.{p['nome'][:6]}"]
 for p in prodotti_cong:     prodotti_gruppi[f"Con.{p['nome'][:6]}"] = [f"Con.{p['nome'][:6]}"]
 for p in prodotti_cagliata: prodotti_gruppi[f"Cag.{p['nome'][:6]}"] = [f"Cag.{p['nome'][:6]}"]
@@ -489,8 +592,9 @@ if colonne_da_nascondere:
 # colonne editabili (tutto tranne Refrigerato, Ritirato, Resa)
 col_readonly = {"Data"}
 col_readonly |= {c for c in df.columns if c.startswith("Ref.") or c.startswith("Rit.") or c in ("R.MBC","R.Buf","R.Vacc")}
-col_readonly |= {c for c in df.columns if c == "Mozz.MBC" or c.startswith("Mis.") or c.startswith("Vac.") or c.startswith("Con.") or c.startswith("Cag.")}
-col_readonly |= {c for c in df.columns if c.endswith("Tot") or c.endswith("dop")}
+col_readonly |= {c for c in df.columns if c == "Mozz.MBC" or c.startswith("Vac.") or c.startswith("Con.") or c.startswith("Cag.")}
+col_readonly |= {c for c in df.columns if c.startswith("Mis.") and c.endswith("Tot")}
+col_readonly |= {c for c in df.columns if c.endswith("Tot") or c.endswith("dop") or c.endswith("LatteDOP")}
 col_readonly |= {c for c in df.columns if c == "Tr.BufCong"}
 col_readonly |= {c for c in df.columns if c == "RBC.Buf"}
 
@@ -504,10 +608,32 @@ for col in df.columns:
 df_mod = st.data_editor(df, column_config=column_config, hide_index=True, width="stretch", key="griglia_registro")
 
 # ------------------------------------------------------------
+# BLOCCO: GIACENZA DI CHIUSURA A FINE PERIODO
+# La tabella sopra mostra sempre l'APERTURA di ogni giorno (= chiusura del
+# giorno prima). Su richiesta dell'utente (27/08) mostriamo qui SEPARATAMENTE
+# anche la CHIUSURA dell'ultimo giorno del periodo selezionato, cioè la
+# giacenza reale "a fine periodo" (apertura dell'ultimo giorno + movimenti di
+# quel giorno).
+# ------------------------------------------------------------
+etichette_chiusura = [
+    (usa_dop, "MBC", "bufala_dop"), (usa_buf, "Buf", "bufala"), (usa_vacc, "Vacc", "vaccino"),
+    (usa_sem_buf, "SemB", "semilavorato_bufala"), (usa_sem_vacc, "SemV", "semilavorato_vaccino"),
+]
+n_metriche = sum(1 for attivo, _, _ in etichette_chiusura if attivo) or 1
+cols_chiusura = st.columns(n_metriche)
+i_col = 0
+for attivo, etichetta, tipo in etichette_chiusura:
+    if not attivo:
+        continue
+    with cols_chiusura[i_col]:
+        st.metric(f"Chiusura {etichetta} al {periodo_fine.strftime('%d/%m/%Y')}", f"{round(giacenza_chiusura_periodo.get(tipo, 0))} kg")
+    i_col += 1
+
+# ------------------------------------------------------------
 # BLOCCO: SALVATAGGIO
 # ------------------------------------------------------------
 if is_owner():
-    st.caption("Nota: la produzione (Mozzarella Prodotta) si modifica SOLO nella pagina Produzioni. Qui puoi solo spostare una quota dei prodotti derivati (senza lattosio, mozzarella di bufala, ecc.) su latte non-DOP con le colonne 'nD'.")
+    st.caption("Nota: la produzione (Mozzarella Prodotta) si modifica SOLO nella pagina Produzioni. Qui puoi solo spostare una quota dei prodotti derivati (senza lattosio, mozzarella di bufala, ecc.) su latte non-DOP con le colonne 'nD', e indicare quanto latte bufala/vaccino è entrato nella Mozzarella Mista con le colonne 'Buf'/'Vac'.")
     if st.button("💾 Salva registro"):
         record_trasf, record_vend = [], []
         for i, d in enumerate(date_periodo):
@@ -528,6 +654,18 @@ if is_owner():
                 client.table("produzione_origine").upsert({
                     "produzione_id": rec["id"], "origine": "non_dop", "kg": kg_nd,
                 }, on_conflict="produzione_id,origine").execute()
+
+            # latte bufala/vaccino usato per la Mozzarella Mista (aggiunto 27/08)
+            for p in prodotti_mista:
+                base = f"Mis.{p['nome'][:6]}"
+                rec = prod_map.get((p["id"], ds))
+                if not rec: continue
+                for origine, col in [("bufala", f"{base}Buf"), ("vaccino", f"{base}Vac")]:
+                    if col not in df.columns: continue
+                    kg_o = float(df_mod.loc[i, col] or 0)
+                    client.table("produzione_origine").upsert({
+                        "produzione_id": rec["id"], "origine": origine, "kg": kg_o,
+                    }, on_conflict="produzione_id,origine").execute()
 
             for t, col in [("bufala_congelato","CongVend"),("vaccino","VaccVend")]:
                 if col in df.columns:
