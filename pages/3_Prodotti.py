@@ -181,6 +181,50 @@ else:
                             }).eq("id", p["id"]).execute()
                             st.success("Prodotto aggiornato.")
                             st.rerun()
+
+                    # ------------------------------------------------------------
+                    # BLOCCO: COLONNE VENDITA A TERZI (nomi scelti dall'utente)
+                    # Fuori dal form sopra perche' deve reagire SUBITO quando cambi
+                    # il numero di colonne (nei form di Streamlit i widget si
+                    # aggiornano solo al submit, qui invece serve la reattivita'
+                    # immediata). Visibile solo se "consenti piu' destinatari" e'
+                    # gia' salvato True per questo prodotto (aggiunto 27/08).
+                    # ------------------------------------------------------------
+                    if p.get("consente_piu_terzi"):
+                        st.divider()
+                        st.caption("Colonne per la vendita a terzi in Produzioni: quante sono e come si chiamano")
+                        colonne_esistenti = (
+                            client.table("prodotto_colonne_terzi").select("*")
+                            .eq("prodotto_id", p["id"]).order("ordine").execute().data
+                        )
+                        n_colonne = st.number_input(
+                            "Quante colonne per vendita a terzi?", min_value=1, max_value=10,
+                            value=len(colonne_esistenti) or 1, step=1, key=f"ncol_terzi_{p['id']}",
+                        )
+                        nomi_colonne = []
+                        for i in range(int(n_colonne)):
+                            valore_default = colonne_esistenti[i]["nome"] if i < len(colonne_esistenti) else ""
+                            nomi_colonne.append(st.text_input(
+                                f"Nome colonna {i + 1}", value=valore_default, key=f"nome_col_terzi_{p['id']}_{i}",
+                            ))
+                        if st.button("Salva colonne vendita a terzi", key=f"salva_col_terzi_{p['id']}"):
+                            for i, nome_col in enumerate(nomi_colonne):
+                                nome_col = nome_col.strip() or f"Terzo {i + 1}"
+                                if i < len(colonne_esistenti):
+                                    if colonne_esistenti[i]["nome"] != nome_col:
+                                        client.table("prodotto_colonne_terzi").update(
+                                            {"nome": nome_col}
+                                        ).eq("id", colonne_esistenti[i]["id"]).execute()
+                                else:
+                                    client.table("prodotto_colonne_terzi").insert({
+                                        "prodotto_id": p["id"], "nome": nome_col, "ordine": i,
+                                    }).execute()
+                            if len(colonne_esistenti) > len(nomi_colonne):
+                                for extra in colonne_esistenti[len(nomi_colonne):]:
+                                    client.table("prodotto_colonne_terzi").delete().eq("id", extra["id"]).execute()
+                                st.warning("Attenzione: le colonne rimosse eliminano anche i dati di produzione già salvati per quelle colonne.")
+                            st.success("Colonne aggiornate.")
+                            st.rerun()
         with col4:
             if is_owner():
                 if st.button("🗑️", key=f"prod_del_{p['id']}", help="Elimina prodotto"):
