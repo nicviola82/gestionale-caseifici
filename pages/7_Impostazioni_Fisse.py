@@ -242,3 +242,38 @@ if storico:
     } for s in storico])
 else:
     st.write("Nessuna impostazione salvata ancora.")
+
+st.divider()
+
+# ------------------------------------------------------------
+# BLOCCO: REFRIGERANTI (spostato qui da Anagrafica Caseificio - punto 8, 27/08)
+# ------------------------------------------------------------
+st.subheader("Refrigeranti (tank di stoccaggio)")
+
+refrigeranti = (
+    client.table("refrigeranti")
+    .select("*")
+    .eq("caseificio_id", caseificio_id)
+    .order("codice")
+    .execute()
+    .data
+)
+if refrigeranti:
+    st.table([{"Codice": r["codice"], "Nome": r.get("nome") or "-", "Capienza (kg)": r.get("capienza_kg"), "Attivo": "Sì" if r["attivo"] else "No"} for r in refrigeranti])
+else:
+    st.write("Nessun refrigerante inserito ancora.")
+
+with st.expander("➕ Aggiungi refrigerante"):
+    with st.form("nuovo_refrigerante"):
+        codice = st.text_input("Codice / lettera identificativa")
+        nome = st.text_input("Nome refrigerante")
+        capienza = st.number_input("Capienza (kg)", min_value=0.0, step=100.0)
+        if st.form_submit_button("Salva refrigerante"):
+            client.table("refrigeranti").insert({
+                "caseificio_id": caseificio_id,
+                "codice": codice,
+                "nome": nome,
+                "capienza_kg": capienza,
+            }).execute()
+            st.success("Refrigerante aggiunto.")
+            st.rerun()
