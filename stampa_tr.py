@@ -1,15 +1,21 @@
 # ============================================================
 # MODULO: STAMPA TR
 # Compila il foglio "tr" (tabellone giornaliero) del template
-# ufficiale (templates_dop.xlsx).
+# ufficiale (templates_dop.xlsx), riscritto il 27/08 seguendo con
+# precisione il file reale fornito dall'utente (FAIL__1_.xlsx).
 #
 # REGOLA DELLE RIGHE DINAMICHE (solo per questo foglio, MBC/RBC
 # restano sempre statici):
 #   - un blocco/riga esiste se e solo se esiste un CONFERITORE
-#     ATTIVO registrato per quella categoria - NON in base al
-#     fatto che abbia consegnato qualcosa quel giorno. Un
-#     conferitore attivo compare sempre, anche con 0 kg quel
-#     giorno.
+#     ATTIVO registrato per quella categoria (allevamenti/caseifici
+#     dop/non-dop/vaccino/cagliata) - NON in base al fatto che abbia
+#     consegnato qualcosa quel giorno. Un conferitore attivo compare
+#     sempre, anche con 0 kg quel giorno.
+#   - il blocco CONGELATO fa eccezione: e' un EVENTO (scongelamento
+#     avvenuto quel giorno), non un conferitore fisso - quindi
+#     compare SOLO se quel giorno c'e' stato davvero un evento
+#     ("far vedere solo quello che entra realmente in azienda",
+#     confermato dall'utente 27/08).
 #   - i blocchi "allevamenti dop" e "caseifici dop" esistono
 #     SOLO se il caseificio stesso e' DOP (caseifici.is_dop).
 #     Se il caseificio non e' DOP, quei blocchi non vengono
@@ -17,30 +23,65 @@
 #   - i prodotti finiti elencano SEMPRE tutti i prodotti attivi
 #     (tabella Prodotti), anche con quantita' 0 quel giorno.
 #
+# LATTE CONGELATO/SCONGELATO (confermato dall'utente 27/08):
+#   - latte SCONGELATO che rientra in produzione -> va tra i
+#     conferitori di latte IN INGRESSO (blocco CONGELATO qui sotto),
+#     contato SEMPRE come bufala NON-DOP (mai bufala_dop) - stessa
+#     regola gia' in vigore nel Registro (registro_calc.py).
+#   - latte che ESCE per essere congelato -> NON e' un ingresso, va
+#     nella sezione Lavorazione, colonna "latte destinato al
+#     congelamento" (G55 nel template originale).
+#
+# CAGLIATA (confermato dall'utente 27/08): righe distinte tra
+# bufala e vaccino - due mini-blocchi "CAGLIATA BUFALA"/"CAGLIATA
+# VACCINA", DENTRO la sezione ingresso ma ESCLUSI dai totali di
+# latte (bufala/vaccino) sotto - "discorso diverso", sono conferimenti
+# di semilavorato, non di latte.
+#
 # Le formule originali del template sono quasi tutte #REF! rotte
 # (collegate a un workbook che non esiste piu'), quindi qui NON
 # proviamo a ripararle: scriviamo valori diretti calcolati in
-# Python, comprese le celle di totale.
+# Python, comprese le celle di totale - CORRETTE rispetto
+# all'originale dove l'originale stesso sommava solo una parte
+# delle righe del blocco (es. il totale G ingresso sommava solo
+# G43+G44 invece di tutto il blocco CONGELATO, confermato con
+# l'utente che va corretto).
 # ============================================================
 import random
 import copy
 import shutil
+import datetime as _dt
 import openpyxl
 
-from stampa_mbc import get_registro_giacenza_apertura, TEMPLATE_PATH  # ora collegata al vero Registro
+import registro_calc
+from stampa_mbc import get_registro_giacenza_apertura, get_prodotto_e_produzione_giorno, TEMPLATE_PATH
 
 FOGLIO = "tr"
 
 # (nome, riga_inizio, n_righe_template, tipi_conferitore, tipo_latte, richiede_caseificio_dop)
-BLOCCHI = [
+# NOTA: tolti "semilavorato_bufala"/"semilavorato_vaccino" - non esistono nel template reale,
+# erano un errore di mappatura (le righe 43-46 sono in realta' il blocco CONGELATO).
+BLOCCHI_CONFERITORI = [
     ("allevamenti_dop", 12, 17, ["allevatore"], "bufala_dop", True),
     ("caseifici_dop", 29, 4, ["caseificio"], "bufala_dop", True),
     ("caseificio_non_dop", 33, 5, ["caseificio"], "bufala", False),
     ("allevamenti_non_dop", 38, 2, ["allevatore"], "bufala", False),
     ("vaccino", 40, 3, ["allevatore", "caseificio", "intermediario"], "vaccino", False),
-    ("semilavorato_bufala", 43, 2, ["allevatore", "caseificio", "intermediario"], "semilavorato_bufala", False),
-    ("semilavorato_vaccino", 45, 2, ["allevatore", "caseificio", "intermediario"], "semilavorato_vaccino", False),
 ]
+
+LABEL_BLOCCHI = {
+    "allevamenti_dop": "allevamenti dop latte di bufala",
+    "caseifici_dop": "caseifici dop latte di bufala",
+    "caseificio_non_dop": "caseificio non dop latte di bufala",
+    "allevamenti_non_dop": "all. non dop latte di bufala",
+    "vaccino": "latte vaccino",
+}
+
+RIGA_CONGELATO = 43
+N_RIGHE_TEMPLATE_CONGELATO = 4  # A43:A46 nel template originale
+RIGA_CAGLIATA = 47
+N_RIGHE_TEMPLATE_CAGLIATA_BUFALA = 1  # riga 47 nel template originale
+N_RIGHE_TEMPLATE_CAGLIATA_VACCINA = 0  # non esiste nel template originale, e' una riga NUOVA
 
 
 def _acidita_random():
@@ -98,6 +139,34 @@ def _righe_dati_categoria(client, conferitori, data_giorno):
     return righe
 
 
+def _righe_congelato(client, caseificio_id, data_giorno):
+    """SOLO gli eventi di SCONGELAMENTO avvenuti quel giorno (latte che rientra in
+    produzione) - una riga per struttura esterna, raggruppando se piu' movimenti
+    lo stesso giorno dalla stessa struttura. Dinamico: nessun evento -> blocco assente."""
+    movimenti = (
+        client.table("movimenti_congelato")
+        .select("*")
+        .eq("caseificio_id", caseificio_id)
+        .eq("data", str(data_giorno))
+        .eq("tipo", "scongelamento")
+        .execute()
+        .data
+    )
+    per_struttura = {}
+    for m in movimenti:
+        chiave = m.get("struttura_esterna") or "(interno)"
+        if chiave not in per_struttura:
+            per_struttura[chiave] = {"provenienza": chiave, "codice_asl": "", "kg": 0.0, "ddt": []}
+        per_struttura[chiave]["kg"] += float(m.get("kg") or 0)
+        if m.get("ddt"):
+            per_struttura[chiave]["ddt"].append(m["ddt"])
+    righe = []
+    for dato in per_struttura.values():
+        dato["ddt"] = ", ".join(dato["ddt"])
+        righe.append(dato)
+    return righe
+
+
 def _copia_stile_riga(ws, riga_origine, riga_dest, colonne):
     for col in colonne:
         c_orig = ws[f"{col}{riga_origine}"]
@@ -122,28 +191,24 @@ def _trova_merge_colonna_a(ws, riga_inizio):
 
 
 def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_originale):
-    """righe_dati vuoto => nessun conferitore attivo per questa categoria => blocco eliminato.
-    righe_dati non vuoto => un conferitore attivo esiste, il blocco resta SEMPRE (anche a 0 kg)."""
-
-    # CORREZIONE BUG GRIGLIE: il template ha un merge verticale in colonna A (l'etichetta
-    # della categoria, es. "allevamenti dop...") che copre TUTTA l'altezza del blocco
-    # originale (es. A12:A28, 17 righe). ws.delete_rows/insert_rows NON lo ridimensiona da
-    # solo: il merge restava della vecchia altezza anche quando le righe reali erano molte
-    # di meno, creando una scatola enorme che sconfinava nel blocco successivo. Lo tolgo
-    # prima di toccare le righe e lo ricreo dopo, della dimensione giusta.
+    """righe_dati vuoto => blocco assente (0 righe, nessun conferitore/evento).
+    righe_dati non vuoto => il blocco resta SEMPRE (anche a 0 kg, per i conferitori fissi).
+    n_righe_template puo' essere 0 (blocco nuovo, non esisteva nel template originale) - in
+    quel caso, se ci sono dati, le righe vengono semplicemente inserite da zero."""
     merge_a = _trova_merge_colonna_a(ws, riga_inizio)
     if merge_a:
         ws.unmerge_cells(str(merge_a))
 
     if not righe_dati:
-        ws.delete_rows(riga_inizio, n_righe_template)
+        if n_righe_template > 0:
+            ws.delete_rows(riga_inizio, n_righe_template)
         return -n_righe_template
 
     n_dati = len(righe_dati)
     delta = n_dati - n_righe_template
 
     if delta > 0:
-        riga_stile = riga_inizio + n_righe_template - 1
+        riga_stile = riga_inizio + n_righe_template - 1 if n_righe_template > 0 else riga_inizio - 1
         ws.insert_rows(riga_inizio + n_righe_template, delta)
         for i in range(delta):
             r = riga_inizio + n_righe_template + i
@@ -164,23 +229,11 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
         ws[f"J{r}"] = _temperatura_random() if dato["kg"] > 0 else ""
         ws[f"K{r}"] = "OK" if dato["kg"] > 0 else ""
 
-    # Ricreo il merge colonna A della dimensione corretta (n_dati righe, non piu' n_righe_template)
     if merge_a and n_dati > 1:
         ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
-        _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])  # mantiene lo stile sull'anchor
+        _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])
 
     return delta
-
-
-LABEL_BLOCCHI = {
-    "allevamenti_dop": "allevamenti dop latte di bufala",
-    "caseifici_dop": "caseifici dop latte di bufala",
-    "caseificio_non_dop": "caseificio non dop latte di bufala",
-    "allevamenti_non_dop": "all. non dop latte di bufala",
-    "vaccino": "latte vaccino",
-    "semilavorato_bufala": "semilavorato bufala",
-    "semilavorato_vaccino": "semilavorato vaccino",
-}
 
 
 def _prodotti_finiti(client, caseificio_id, data_giorno):
@@ -217,6 +270,57 @@ def _prodotti_finiti(client, caseificio_id, data_giorno):
     return righe
 
 
+def _resa_dop_giorno(client, caseificio_id, data_giorno):
+    """Resa MBC del giorno = kg MBC prodotta / kg latte bufala_dop trasformato (stessa
+    definizione usata nel Registro per convertire kg-prodotto in kg-latte)."""
+    _, produzione_mozz = get_prodotto_e_produzione_giorno(
+        client, caseificio_id, data_giorno, "Mozzarella di Bufala Campana DOP", solo_dop=True
+    )
+    kg_mozz = float((produzione_mozz or {}).get("kg_totale") or 0)
+    kg_trasf_dop = registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
+    return (kg_mozz / kg_trasf_dop * 100) if kg_trasf_dop > 0 else None
+
+
+def _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto, escludi_ricotta, solo_nome=None):
+    """kg di latte DOP consumato per un gruppo di prodotti (dop_altri o declassati), stessa
+    logica di 'LatteDOP' nel Registro: kg_dop_prodotto / resa. Se solo_nome e' dato, filtra
+    SOLO il prodotto il cui nome contiene quella stringa (es. 'senza lattosio')."""
+    if not resa:
+        return 0.0
+    prodotti = (
+        client.table("prodotti")
+        .select("*")
+        .eq("caseificio_id", caseificio_id)
+        .eq("attivo", True)
+        .eq("is_dop", is_dop_prodotto)
+        .execute()
+        .data
+    )
+    if escludi_ricotta:
+        prodotti = [p for p in prodotti if "ricotta" not in p["nome"].lower()]
+    if solo_nome:
+        prodotti = [p for p in prodotti if solo_nome.lower() in p["nome"].lower()]
+    elif is_dop_prodotto:
+        prodotti = [p for p in prodotti if "senza lattosio" not in p["nome"].lower()]
+
+    totale_latte = 0.0
+    for p in prodotti:
+        rec = (
+            client.table("produzioni").select("*, produzione_origine(*)")
+            .eq("prodotto_id", p["id"]).eq("data", str(data_giorno)).execute().data
+        )
+        if not rec:
+            continue
+        r = rec[0]
+        tot = float(r.get("kg_totale") or 0)
+        origini = {o["origine"]: o for o in r.get("produzione_origine", [])}
+        kg_nondop = float(origini["non_dop"]["kg"]) if "non_dop" in origini and origini["non_dop"].get("kg") else 0.0
+        kg_dop = tot - kg_nondop
+        if kg_dop > 0:
+            totale_latte += kg_dop / (resa / 100)
+    return totale_latte
+
+
 def _compila_tr(ws, client, caseificio_id, data_giorno):
     """Scrive i dati di UN giorno su UN foglio 'tr' worksheet gia' aperto - separata da
     genera_tr() (apertura/salvataggio file) cosi' si puo' riusare dentro un workbook
@@ -225,32 +329,132 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
     offset = 0
     totali = {"bufala_dop": 0.0, "bufala": 0.0, "vaccino": 0.0}
 
-    for nome, riga_inizio, n_righe, tipi_conferitore, tipo_latte, richiede_dop in BLOCCHI:
+    # ------------------------------------------------------------
+    # SEZIONE INGRESSO: blocchi conferitori fissi (allevamenti/caseifici dop/non-dop/vaccino)
+    # ------------------------------------------------------------
+    for nome, riga_inizio, n_righe, tipi_conferitore, tipo_latte, richiede_dop in BLOCCHI_CONFERITORI:
         riga_reale = riga_inizio + offset
-
         if richiede_dop and not is_dop:
             conferitori = []
         else:
             conferitori = _conferitori_attivi_categoria(client, caseificio_id, tipi_conferitore, tipo_latte)
-
         righe_dati = _righe_dati_categoria(client, conferitori, data_giorno)
-
         if tipo_latte in totali:
             totali[tipo_latte] += sum(r["kg"] for r in righe_dati)
-
         delta = _scrivi_blocco(ws, riga_reale, n_righe, righe_dati, LABEL_BLOCCHI[nome])
         offset += delta
 
-    # --- Totali (celle originali erano formule #REF! - qui scriviamo valori diretti) ---
+    # ------------------------------------------------------------
+    # SEZIONE INGRESSO: CONGELATO (SOLO scongelamento = latte che rientra in produzione,
+    # confermato dall'utente 27/08 - conta come bufala NON-DOP, mai bufala_dop, e va nei
+    # totali del latte bufala non-DOP esattamente come un conferimento qualsiasi)
+    # ------------------------------------------------------------
+    riga_congelato = RIGA_CONGELATO + offset
+    righe_congelato = _righe_congelato(client, caseificio_id, data_giorno)
+    totali["bufala"] += sum(r["kg"] for r in righe_congelato)
+    delta = _scrivi_blocco(ws, riga_congelato, N_RIGHE_TEMPLATE_CONGELATO, righe_congelato, "CONGELATO (latte scongelato rientrato)")
+    offset += delta
+
+    # ------------------------------------------------------------
+    # SEZIONE INGRESSO: CAGLIATA BUFALA / CAGLIATA VACCINA (righe distinte, ESCLUSE dai
+    # totali di latte bufala/vaccino sopra - "discorso diverso", confermato dall'utente)
+    # ------------------------------------------------------------
+    riga_cagliata_buf = RIGA_CAGLIATA + offset
+    conferitori_cag_buf = _conferitori_attivi_categoria(
+        client, caseificio_id, ["allevatore", "caseificio", "intermediario"], "semilavorato_bufala"
+    )
+    righe_cag_buf = _righe_dati_categoria(client, conferitori_cag_buf, data_giorno)
+    delta = _scrivi_blocco(ws, riga_cagliata_buf, N_RIGHE_TEMPLATE_CAGLIATA_BUFALA, righe_cag_buf, "CAGLIATA BUFALA")
+    offset += delta
+
+    riga_cagliata_vacc = RIGA_CAGLIATA + offset  # subito dopo il blocco cagliata bufala
+    conferitori_cag_vacc = _conferitori_attivi_categoria(
+        client, caseificio_id, ["allevatore", "caseificio", "intermediario"], "semilavorato_vaccino"
+    )
+    righe_cag_vacc = _righe_dati_categoria(client, conferitori_cag_vacc, data_giorno)
+    delta = _scrivi_blocco(ws, riga_cagliata_vacc, N_RIGHE_TEMPLATE_CAGLIATA_VACCINA, righe_cag_vacc, "CAGLIATA VACCINA")
+    offset += delta
+
+    # --- Totali (celle originali erano formule #REF! parziali - qui corretti sommando
+    #     TUTTE le righe reali del blocco, non solo le prime due come nel template originale) ---
     riga_tot = 48 + offset
     ws[f"E{riga_tot}"] = totali["bufala_dop"]
     ws[f"E{riga_tot + 1}"] = totali["bufala"]
     ws[f"E{riga_tot + 2}"] = totali["vaccino"]
 
-    # --- Giacenza di apertura (dal Registro attuale) ---
-    ws["E8"] = get_registro_giacenza_apertura(client, caseificio_id, data_giorno)  # TODO Registro
+    # --- Giacenza di apertura DOP (dal Registro) ---
+    ws["E8"] = get_registro_giacenza_apertura(client, caseificio_id, data_giorno)
 
-    # --- Prodotti finiti (righe 67-72 nel template originale, qui si spostano con l'offset) ---
+    # ------------------------------------------------------------
+    # SEZIONE LAVORAZIONE (righe 55-61 nel template originale, si spostano con l'offset)
+    # Mappata sui dati gia' calcolati nel Registro (registro_calc.py) - stessi numeri che
+    # vedi nella pagina Registro, nessun ricalcolo parallelo.
+    # ------------------------------------------------------------
+    riga_lav_intest = 55 + offset  # intestazioni fisse "latte destinato al congelamento"/"latte venduto"
+    riga_lav1_val = 57 + offset    # valori sotto le etichette "buf dop/buf non dop/dop declassato/delattosata" (riga 56)
+    riga_lav2_val = 59 + offset    # valori sotto le etichette "cagliata b/v, buf/vac per mista, vaccino" (riga 58)
+    riga_giac1 = 61 + offset       # giacenza bufala dop / latte di buf
+
+    resa = _resa_dop_giorno(client, caseificio_id, data_giorno)
+    kg_buf_dop = registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
+    kg_buf_non_dop = registro_calc.trasformato(client, caseificio_id, "bufala", data_giorno)
+    kg_buf_dop_declassato = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=False, escludi_ricotta=True)
+    kg_buf_dop_delattosata = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=True, escludi_ricotta=True, solo_nome="senza lattosio")
+    ws[f"A{riga_lav1_val}"] = round(kg_buf_dop) if kg_buf_dop else 0
+    ws[f"B{riga_lav1_val}"] = round(kg_buf_non_dop) if kg_buf_non_dop else 0
+    ws[f"C{riga_lav1_val}"] = round(kg_buf_dop_declassato) if kg_buf_dop_declassato else 0
+    ws[f"E{riga_lav1_val}"] = round(kg_buf_dop_delattosata) if kg_buf_dop_delattosata else 0
+
+    kg_cagliata_b = sum(r["kg"] for r in righe_cag_buf)
+    kg_cagliata_v = sum(r["kg"] for r in righe_cag_vacc)
+    kg_buf_mista = registro_calc.mista_consumato(client, caseificio_id, "bufala", data_giorno)
+    kg_vac_mista = registro_calc.mista_consumato(client, caseificio_id, "vaccino", data_giorno)
+    kg_vaccino_trasf = registro_calc.trasformato(client, caseificio_id, "vaccino", data_giorno)
+    ws[f"A{riga_lav2_val}"] = round(kg_cagliata_b) if kg_cagliata_b else 0
+    ws[f"B{riga_lav2_val}"] = round(kg_cagliata_v) if kg_cagliata_v else 0
+    ws[f"C{riga_lav2_val}"] = round(kg_buf_mista) if kg_buf_mista else 0
+    ws[f"D{riga_lav2_val}"] = round(kg_vac_mista) if kg_vac_mista else 0
+    ws[f"E{riga_lav2_val}"] = round(kg_vaccino_trasf) if kg_vaccino_trasf else 0
+
+    # latte destinato al congelamento (uscita - opposto dello scongelamento sopra)
+    movimenti_uscita = (
+        client.table("movimenti_congelato").select("*")
+        .eq("caseificio_id", caseificio_id).eq("data", str(data_giorno)).eq("tipo", "congelamento")
+        .execute().data
+    )
+    kg_congelamento_uscita = sum(float(m.get("kg") or 0) for m in movimenti_uscita)
+    ddt_congelamento_uscita = ", ".join(m["ddt"] for m in movimenti_uscita if m.get("ddt"))
+    ws[f"G{riga_lav_intest + 1}"] = round(kg_congelamento_uscita) if kg_congelamento_uscita else ""
+    ws[f"I{riga_lav_intest + 1}"] = ddt_congelamento_uscita
+
+    # latte venduto (fino a 2 vendite quel giorno, come gia' fatto per i caseifici DOP in MBC)
+    try:
+        vendite_giorno = (
+            client.table("vendite_latte_destinatari")
+            .select("*, destinatari_vendita(ragione_sociale)")
+            .eq("caseificio_id", caseificio_id).eq("data", str(data_giorno))
+            .execute().data
+        )
+    except Exception:
+        vendite_giorno = []
+    if len(vendite_giorno) >= 1:
+        v = vendite_giorno[0]
+        ws[f"J{riga_lav_intest + 1}"] = round(float(v.get("kg") or 0))
+        ws[f"K{riga_lav_intest + 1}"] = v.get("ddt") or ""
+        ws[f"L{riga_lav_intest + 1}"] = (v.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+    if len(vendite_giorno) >= 2:
+        v = vendite_giorno[1]
+        ws[f"M{riga_lav_intest + 1}"] = round(float(v.get("kg") or 0))
+        ws[f"N{riga_lav_intest + 1}"] = v.get("ddt") or ""
+        ws[f"O{riga_lav_intest + 1}"] = (v.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+
+    # giacenza di chiusura (bufala dop / bufala non-dop) - dal Registro
+    ws[f"B{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala_dop", data_giorno))
+    ws[f"D{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala", data_giorno))
+
+    # ------------------------------------------------------------
+    # SEZIONE PRODOTTI FINITI (righe 67-72 nel template originale, si spostano con l'offset)
+    # ------------------------------------------------------------
     riga_prod = 67 + offset + 1  # +1: la riga 67 e' l'intestazione, i dati partono dalla successiva
     prodotti = _prodotti_finiti(client, caseificio_id, data_giorno)
     n_righe_template_prodotti = 5  # righe 68-72 nel template originale
@@ -269,8 +473,6 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
         r = riga_prod + i
         ws[f"A{r}"] = prod["nome"]
         ws[f"D{r}"] = prod["quantita"]
-        # CORREZIONE formato data: era "%Y%m%d" (es. 20260822), ora GG/MM/AAAA come da regola
-        # generale del programma, come tutte le altre date visualizzate.
         ws[f"F{r}"] = data_giorno.strftime("%d/%m/%Y") if prod["quantita"] > 0 else ""
         ws[f"H{r}"] = prod["diretta"]
         ws[f"J{r}"] = prod["terzi"]
@@ -296,8 +498,6 @@ def genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path):
     diverse). Per questo si tiene un foglio "pristine" nascosto, usato solo come sorgente per
     wb.copy_worksheet(), e lo si cancella alla fine.
     """
-    import datetime as _dt
-
     shutil.copy(TEMPLATE_PATH, output_path)
     wb = openpyxl.load_workbook(output_path)
     for nome in list(wb.sheetnames):
