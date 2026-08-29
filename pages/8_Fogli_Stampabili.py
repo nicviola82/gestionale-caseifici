@@ -46,7 +46,9 @@ if modalita == "Un singolo giorno":
     if st.button("📄 Genera MBC + RBC del giorno"):
         output_path = f"Scheda_{data_giorno.strftime('%Y%m%d')}.xlsx"
         genera_mbc(client, caseificio_id, data_giorno, output_path)
-        genera_rbc(client, caseificio_id, data_giorno, output_path)
+        _, avvisi = genera_rbc(client, caseificio_id, data_giorno, output_path)
+        for a in avvisi:
+            st.warning(f"⚠️ {a}")
         with open(output_path, "rb") as f:
             st.download_button(
                 "⬇️ Scarica scheda compilata (MBC + RBC)",
@@ -84,7 +86,9 @@ if modalita == "Un singolo giorno":
         st.subheader("Solo RBC")
         if st.button("📄 Genera solo RBC del giorno"):
             output_path_rbc = f"RBC_{data_giorno.strftime('%Y%m%d')}.xlsx"
-            genera_rbc_periodo(client, caseificio_id, data_giorno, data_giorno, output_path_rbc)
+            _, avvisi = genera_rbc_periodo(client, caseificio_id, data_giorno, data_giorno, output_path_rbc)
+            for a in avvisi:
+                st.warning(f"⚠️ {a}")
             with open(output_path_rbc, "rb") as f:
                 st.download_button(
                     "⬇️ Scarica solo RBC",
@@ -101,7 +105,7 @@ if modalita == "Un singolo giorno":
     # tr (righe dinamiche in base ai conferitori attivi)
     # ------------------------------------------------------------
     st.subheader("tr - Tabellone giornaliero")
-    st.caption("Le righe dei conferitori vengono generate solo per chi ha effettivamente conferito quel giorno.")
+    st.caption("Righe: un conferitore attivo compare sempre (anche a 0 kg quel giorno); il blocco CONGELATO compare solo nei giorni con un vero scongelamento; i prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato.")
     if st.button("📄 Genera tr del giorno"):
         output_path_tr = f"tr_{data_giorno.strftime('%Y%m%d')}.xlsx"
         genera_tr(client, caseificio_id, data_giorno, output_path_tr)
@@ -155,7 +159,9 @@ else:
     st.subheader("RBC - Registro Ricotta")
     if st.button("📄 Genera RBC del periodo"):
         output_path = f"RBC_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
-        genera_rbc_periodo(client, caseificio_id, data_da, data_a, output_path)
+        _, avvisi = genera_rbc_periodo(client, caseificio_id, data_da, data_a, output_path)
+        for a in avvisi:
+            st.warning(f"⚠️ {a}")
         with open(output_path, "rb") as f:
             st.download_button(
                 "⬇️ Scarica RBC del periodo",
@@ -169,7 +175,7 @@ else:
     st.divider()
 
     st.subheader("tr - Tabellone giornaliero")
-    st.caption("Le righe dei conferitori vengono generate solo per chi ha effettivamente conferito quel giorno.")
+    st.caption("Righe: un conferitore attivo compare sempre (anche a 0 kg quel giorno); il blocco CONGELATO compare solo nei giorni con un vero scongelamento; i prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato.")
     if st.button("📄 Genera tr del periodo"):
         output_path_tr = f"tr_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
         genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path_tr)
