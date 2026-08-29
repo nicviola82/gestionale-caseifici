@@ -39,8 +39,51 @@ if not is_owner():
 
 caseifici = query.order("ragione_sociale").execute().data
 
+# ------------------------------------------------------------
+# BLOCCO: NUOVO CASEIFICIO
+# Spostato PRIMA del controllo "nessun caseificio" qui sotto: altrimenti,
+# alla primissima volta (zero caseifici), la pagina si fermava subito e non
+# c'era alcun modo di crearne uno (bug introdotto togliendo la vecchia
+# pagina Anagrafica, che era raggiungibile anche a lista vuota - 27/08).
+# ------------------------------------------------------------
+if is_owner():
+    with st.popover("➕ Nuovo caseificio"):
+        with st.form("nuovo_caseificio"):
+            n_ragione_sociale = st.text_input("Denominazione sociale")
+            n_sede_legale = st.text_input("Sede legale")
+            n_sede_operativa = st.text_input("Sede operativa")
+            n_piva = st.text_input("P.IVA")
+            n_is_dop = st.checkbox("Caseificio linea DOP")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                n_aut_852_numero = st.text_input("Autorizzazione 852 - numero")
+                n_aut_852_rilascio = st.date_input("852 - data rilascio", value=None, key="n852r")
+                n_aut_852_scadenza = st.date_input("852 - data scadenza", value=None, key="n852s")
+            with col2:
+                n_aut_853_numero = st.text_input("Autorizzazione 853 - numero")
+                n_aut_853_rilascio = st.date_input("853 - data rilascio", value=None, key="n853r")
+                n_aut_853_scadenza = st.date_input("853 - data scadenza", value=None, key="n853s")
+
+            if st.form_submit_button("Salva nuovo caseificio"):
+                client.table("caseifici").insert({
+                    "ragione_sociale": n_ragione_sociale,
+                    "sede_legale": n_sede_legale,
+                    "sede_operativa": n_sede_operativa,
+                    "piva": n_piva,
+                    "is_dop": n_is_dop,
+                    "aut_852_numero": n_aut_852_numero,
+                    "aut_852_rilascio": str(n_aut_852_rilascio) if n_aut_852_rilascio else None,
+                    "aut_852_scadenza": str(n_aut_852_scadenza) if n_aut_852_scadenza else None,
+                    "aut_853_numero": n_aut_853_numero,
+                    "aut_853_rilascio": str(n_aut_853_rilascio) if n_aut_853_rilascio else None,
+                    "aut_853_scadenza": str(n_aut_853_scadenza) if n_aut_853_scadenza else None,
+                }).execute()
+                st.success("Caseificio creato. Selezionalo dalla tendina qui sotto.")
+                st.rerun()
+
 if not caseifici:
-    st.info("Nessun caseificio presente. Usa 'Anagrafica Caseificio' nel menu a sinistra per crearne uno.")
+    st.info("Nessun caseificio presente. Usa il tasto '➕ Nuovo caseificio' qui sopra per crearne uno.")
     st.stop()
 
 opzioni = {f"{c['ragione_sociale']} {'(DOP)' if c['is_dop'] else ''}": c["id"] for c in caseifici}
@@ -54,7 +97,75 @@ if st.session_state.get("caseificio_id") != nuovo_caseificio_id:
 st.session_state["caseificio_id"] = nuovo_caseificio_id
 st.session_state["caseificio_nome"] = scelta
 
-st.page_link("pages/1_Anagrafica_Caseificio.py", label="✏️ Modifica dati anagrafici di questo caseificio", icon="✏️")
+# ------------------------------------------------------------
+# BLOCCO: MODIFICA DATI ANAGRAFICI DEL CASEIFICIO SELEZIONATO
+# CORREZIONE 27/08: prima il tasto "Modifica" mandava alla pagina Anagrafica
+# Caseificio, che pero' NON aveva nessun modulo di modifica dei dati (solo
+# creazione nuovo caseificio + una scheda di sola lettura) - da qui il "non
+# funziona" segnalato. La pagina Anagrafica Caseificio viene eliminata: tutto
+# (nuovo caseificio, modifica caseificio) vive qui. I refrigeranti si spostano
+# in Impostazioni Fisse (vedi punto 8).
+# ------------------------------------------------------------
+if is_owner():
+    caseificio_corrente = client.table("caseifici").select("*").eq("id", nuovo_caseificio_id).single().execute().data
+    with st.popover("✏️ Modifica dati anagrafici di questo caseificio"):
+        with st.form("modifica_caseificio"):
+            m_ragione_sociale = st.text_input("Denominazione sociale", value=caseificio_corrente.get("ragione_sociale") or "")
+            m_sede_legale = st.text_input("Sede legale", value=caseificio_corrente.get("sede_legale") or "")
+            m_sede_operativa = st.text_input("Sede operativa", value=caseificio_corrente.get("sede_operativa") or "")
+            m_piva = st.text_input("P.IVA", value=caseificio_corrente.get("piva") or "")
+            m_is_dop = st.checkbox("Caseificio linea DOP", value=caseificio_corrente.get("is_dop", False))
+
+            col1, col2 = st.columns(2)
+            with col1:
+                m_aut_852_numero = st.text_input("Autorizzazione 852 - numero", value=caseificio_corrente.get("aut_852_numero") or "")
+                m_aut_852_rilascio = st.date_input(
+                    "852 - data rilascio",
+                    value=_dt.date.fromisoformat(caseificio_corrente["aut_852_rilascio"]) if caseificio_corrente.get("aut_852_rilascio") else None,
+                )
+                m_aut_852_scadenza = st.date_input(
+                    "852 - data scadenza",
+                    value=_dt.date.fromisoformat(caseificio_corrente["aut_852_scadenza"]) if caseificio_corrente.get("aut_852_scadenza") else None,
+                )
+            with col2:
+                m_aut_853_numero = st.text_input("Autorizzazione 853 - numero", value=caseificio_corrente.get("aut_853_numero") or "")
+                m_aut_853_rilascio = st.date_input(
+                    "853 - data rilascio",
+                    value=_dt.date.fromisoformat(caseificio_corrente["aut_853_rilascio"]) if caseificio_corrente.get("aut_853_rilascio") else None,
+                )
+                m_aut_853_scadenza = st.date_input(
+                    "853 - data scadenza",
+                    value=_dt.date.fromisoformat(caseificio_corrente["aut_853_scadenza"]) if caseificio_corrente.get("aut_853_scadenza") else None,
+                )
+
+            if st.form_submit_button("Salva modifiche"):
+                client.table("caseifici").update({
+                    "ragione_sociale": m_ragione_sociale,
+                    "sede_legale": m_sede_legale,
+                    "sede_operativa": m_sede_operativa,
+                    "piva": m_piva,
+                    "is_dop": m_is_dop,
+                    "aut_852_numero": m_aut_852_numero,
+                    "aut_852_rilascio": str(m_aut_852_rilascio) if m_aut_852_rilascio else None,
+                    "aut_852_scadenza": str(m_aut_852_scadenza) if m_aut_852_scadenza else None,
+                    "aut_853_numero": m_aut_853_numero,
+                    "aut_853_rilascio": str(m_aut_853_rilascio) if m_aut_853_rilascio else None,
+                    "aut_853_scadenza": str(m_aut_853_scadenza) if m_aut_853_scadenza else None,
+                }).eq("id", nuovo_caseificio_id).execute()
+                st.success("Dati anagrafici aggiornati.")
+                st.session_state["caseificio_nome"] = f"{m_ragione_sociale} {'(DOP)' if m_is_dop else ''}"
+                st.rerun()
+
+    # avviso scadenze autorizzazioni, sempre visibile (non solo dentro il popover)
+    for campo, etichetta in [("aut_852_scadenza", "Autorizzazione 852"), ("aut_853_scadenza", "Autorizzazione 853")]:
+        val = caseificio_corrente.get(campo)
+        if val:
+            scadenza = _dt.date.fromisoformat(val)
+            oggi_check = _dt.date.today()
+            if scadenza < oggi_check:
+                st.error(f"⚠️ {etichetta} SCADUTA il {scadenza.strftime('%d/%m/%Y')}")
+            elif (scadenza - oggi_check).days <= 30:
+                st.warning(f"⚠️ {etichetta} in scadenza il {scadenza.strftime('%d/%m/%Y')}")
 
 # ------------------------------------------------------------
 # BLOCCO: ELIMINA CASEIFICIO (solo owner)
