@@ -238,6 +238,48 @@ if movimenti:
         "Struttura esterna": m.get("struttura_esterna") or "(prelievo interno)",
     } for m in movimenti])
 
+    # ------------------------------------------------------------
+    # BLOCCO: MODIFICA/ELIMINA CONGELAMENTO (punto 5, 27/08)
+    # Solo sulle righe di tipo "congelamento" (l'invio a congelare, che si
+    # registra da qui) - lo "scongelamento" storico resta di sola lettura,
+    # è un dato vecchio, il ritiro nuovo si fa dalla griglia conferimenti.
+    # ------------------------------------------------------------
+    movimenti_modificabili = [m for m in movimenti if m["tipo"] == "congelamento"]
+    if movimenti_modificabili:
+        with st.expander("✏️ Modifica o elimina un congelamento"):
+            etichette_mov = {
+                f"{_dt.date.fromisoformat(m['data']).strftime('%d/%m/%Y')} - {m['kg']} kg - {('Bufala DOP' if m.get('origine') == 'bufala_dop' else 'Bufala')}": m
+                for m in movimenti_modificabili
+            }
+            scelta_mov = st.selectbox("Seleziona il congelamento da modificare/eliminare", list(etichette_mov.keys()), key="scelta_congelamento")
+            mov_sel = etichette_mov[scelta_mov]
+            with st.form("modifica_congelamento"):
+                data_mod = st.date_input("Data", value=_dt.date.fromisoformat(mov_sel["data"]), format="DD/MM/YYYY")
+                origine_mod = st.radio(
+                    "Origine", ["bufala_dop", "bufala"],
+                    index=0 if mov_sel.get("origine") == "bufala_dop" else 1,
+                    format_func=lambda x: "Bufala DOP" if x == "bufala_dop" else "Bufala",
+                )
+                kg_mod = st.number_input("KG messi in congelamento", min_value=0.0, step=1.0, value=float(mov_sel["kg"]))
+                ddt_mod = st.text_input("N. DDT (facoltativo)", value=mov_sel.get("ddt") or "")
+                struttura_mod = st.text_input("Struttura esterna (facoltativo)", value=mov_sel.get("struttura_esterna") or "")
+                col_sm, col_el = st.columns(2)
+                with col_sm:
+                    salva_mod = st.form_submit_button("💾 Salva modifiche")
+                with col_el:
+                    elimina_mod = st.form_submit_button("🗑️ Elimina", type="secondary")
+                if salva_mod:
+                    client.table("movimenti_congelato").update({
+                        "data": str(data_mod), "origine": origine_mod, "kg": kg_mod,
+                        "ddt": ddt_mod or None, "struttura_esterna": struttura_mod or None,
+                    }).eq("id", mov_sel["id"]).execute()
+                    st.success("Congelamento aggiornato.")
+                    st.rerun()
+                if elimina_mod:
+                    client.table("movimenti_congelato").delete().eq("id", mov_sel["id"]).execute()
+                    st.success("Congelamento eliminato.")
+                    st.rerun()
+
 # ------------------------------------------------------------
 # BLOCCO: RIEPILOGO MOVIMENTAZIONI CONGELATO/SCONGELATO DEL PERIODO
 # Somma in un unico riepilogo: (a) congelamento (da movimenti_congelato,
@@ -389,6 +431,49 @@ try:
             "KG": v["kg"],
             "DDT": v.get("ddt") or "-",
         } for v in vendite_latte_periodo])
+
+        # ------------------------------------------------------------
+        # BLOCCO: MODIFICA/ELIMINA VENDITA LATTE (punto 5, 27/08)
+        # ------------------------------------------------------------
+        if is_owner():
+            with st.expander("✏️ Modifica o elimina una vendita di latte"):
+                etichette_vl = {
+                    f"{_dt.date.fromisoformat(v['data']).strftime('%d/%m/%Y')} - {(v.get('destinatari_vendita') or {}).get('ragione_sociale', '-')} - {v['kg']} kg": v
+                    for v in vendite_latte_periodo
+                }
+                scelta_vl = st.selectbox("Seleziona la vendita da modificare/eliminare", list(etichette_vl.keys()), key="scelta_vendita_latte")
+                vl_sel = etichette_vl[scelta_vl]
+                with st.form("modifica_vendita_latte"):
+                    vlm_dest_nome = st.selectbox(
+                        "Destinatario", [d["ragione_sociale"] for d in destinatari_attivi],
+                        index=[d["id"] for d in destinatari_attivi].index(vl_sel["destinatario_id"]) if vl_sel["destinatario_id"] in [d["id"] for d in destinatari_attivi] else 0,
+                        key="vlm_dest",
+                    )
+                    vlm_tipo = st.selectbox(
+                        "Tipo di latte venduto", list(TIPI_LATTE_LABEL.keys()),
+                        index=list(TIPI_LATTE_LABEL.keys()).index(vl_sel["tipo_latte"]) if vl_sel["tipo_latte"] in TIPI_LATTE_LABEL else 0,
+                        format_func=lambda t: TIPI_LATTE_LABEL[t], key="vlm_tipo",
+                    )
+                    vlm_data = st.date_input("Data vendita", value=_dt.date.fromisoformat(vl_sel["data"]), format="DD/MM/YYYY", key="vlm_data")
+                    vlm_kg = st.number_input("KG venduti", min_value=0.0, step=1.0, value=float(vl_sel["kg"]), key="vlm_kg")
+                    vlm_ddt = st.text_input("N. DDT (facoltativo)", value=vl_sel.get("ddt") or "", key="vlm_ddt")
+                    col_svl, col_elvl = st.columns(2)
+                    with col_svl:
+                        salva_vl = st.form_submit_button("💾 Salva modifiche")
+                    with col_elvl:
+                        elimina_vl = st.form_submit_button("🗑️ Elimina", type="secondary")
+                    if salva_vl:
+                        vlm_dest_id = next(d["id"] for d in destinatari_attivi if d["ragione_sociale"] == vlm_dest_nome)
+                        client.table("vendite_latte_destinatari").update({
+                            "destinatario_id": vlm_dest_id, "tipo_latte": vlm_tipo,
+                            "data": str(vlm_data), "kg": vlm_kg, "ddt": vlm_ddt or None,
+                        }).eq("id", vl_sel["id"]).execute()
+                        st.success("Vendita aggiornata.")
+                        st.rerun()
+                    if elimina_vl:
+                        client.table("vendite_latte_destinatari").delete().eq("id", vl_sel["id"]).execute()
+                        st.success("Vendita eliminata.")
+                        st.rerun()
     else:
         st.write("Nessuna vendita di latte registrata in questo periodo.")
 except Exception:
