@@ -71,7 +71,7 @@ def get_siero_acquistato(client, caseificio_id, data_giorno):
 # stesso giorno (comportamento storico), sia in un file separato (vedi genera_rbc_periodo) - in
 # entrambi i casi Q5/U5 vengono scritti come valori letterali, mai piu' come formula verso MBC.
 # ------------------------------------------------------------
-def _compila_rbc(ws, client, caseificio_id, data_giorno):
+def _compila_rbc(ws, client, caseificio_id, data_giorno, errori=None):
     anagrafica = get_anagrafica(client, caseificio_id)
 
     # --- Intestazione ---
@@ -132,8 +132,14 @@ def _compila_rbc(ws, client, caseificio_id, data_giorno):
     # H41: sostituita la formula rotta del template "=H78/4*40" - il PS lavorato e' il siero
     # REALMENTE consumato per la ricotta DOP prodotta oggi (ricotta / % resa, principio
     # "niente si crea e nulla si distrugge" gia' usato in siero.py).
-    kg_ps_lavorato, _errore_resa = siero.siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno)
+    kg_ps_lavorato, errore_resa = siero.siero_utilizzato_ricotta_dop_giorno(client, caseificio_id, data_giorno)
     ws["H41"] = r_int(kg_ps_lavorato)
+    # CORREZIONE 27/08: l'errore restituito da siero_utilizzato_ricotta_dop_giorno (es. resa %
+    # non impostata) prima veniva scartato in silenzio - H41 usciva a 0 senza nessun avviso,
+    # su un documento ufficiale. Ora viene raccolto e restituito a chi genera il foglio (vedi
+    # genera_rbc/genera_rbc_periodo), cosi' la pagina Fogli Stampabili puo' mostrarlo.
+    if errore_resa and errori is not None:
+        errori.append(f"{data_giorno.strftime('%d/%m/%Y')}: {errore_resa}")
     # N41: CORREZIONE - non piu' input manuale con default 1, calcolato dal siero lavorato:
     # ogni ciclo lavora al MASSIMO 900 kg (es. 1200 kg = 2 cicli, 2100 kg = 3 cicli).
     ws["N41"] = max(1, math.ceil(kg_ps_lavorato / 900)) if kg_ps_lavorato > 0 else 1
@@ -206,17 +212,27 @@ def _compila_rbc(ws, client, caseificio_id, data_giorno):
 
 def genera_rbc(client, caseificio_id, data_giorno, output_path):
     """Un solo giorno = un solo foglio RBC (comportamento originale, invariato) - va chiamata
-    sullo STESSO file .xlsx su cui e' gia' stata chiamata genera_mbc() per lo stesso giorno."""
+    sullo STESSO file .xlsx su cui e' gia' stata chiamata genera_mbc() per lo stesso giorno.
+    Ritorna (output_path, errori) - errori e' una lista di avvisi (es. resa % non impostata)
+    da mostrare all'utente, MAI da ignorare in silenzio (corretto 27/08)."""
     wb = openpyxl.load_workbook(output_path)
     ws = wb[FOGLIO]
-    _compila_rbc(ws, client, caseificio_id, data_giorno)
+    errori = []
+    _compila_rbc(ws, client, caseificio_id, data_giorno, errori=errori)
     wb.save(output_path)
-    return output_path
+    return output_path, errori
 
 
 def genera_rbc_periodo(client, caseificio_id, data_da, data_a, output_path):
     """Un file RBC con UN FOGLIO PER GIORNO nell'intervallo [data_da, data_a] (inclusi).
-    File separato da MBC/tr, come richiesto - non contiene gli altri due fogli del template."""
+    File separato da MBC/tr, come richiesto - non contiene gli altri due fogli del template.
+    CORREZIONE 27/08: prima il giorno 0 veniva scritto DIRETTAMENTE sul foglio template del
+    workbook, e i giorni successivi venivano copiati da quello stesso foglio GIA' COMPILATO
+    (non da un template vuoto) - per come e' scritta _compila_rbc questo non causava valori
+    sbagliati (ogni cella viene sempre sovrascritta, mai lasciata come nel giorno prima), ma
+    era comunque fragile: un futuro campo scritto senza un ramo "else" avrebbe fatto trapelare
+    il dato di un giorno nel foglio del giorno successivo. Ora si usa un foglio "pristine"
+    nascosto come sorgente per tutte le copie, stessa idea gia' usata in stampa_tr.py."""
     from stampa_mbc import TEMPLATE_PATH  # stesso file sorgente templates_dop.xlsx
 
     shutil.copy(TEMPLATE_PATH, output_path)
@@ -224,14 +240,17 @@ def genera_rbc_periodo(client, caseificio_id, data_da, data_a, output_path):
     for nome in list(wb.sheetnames):
         if nome != FOGLIO:
             del wb[nome]
-    ws_template = wb[FOGLIO]
+    ws_pristine = wb[FOGLIO]
+    ws_pristine.title = "_pristine_rbc"
 
+    errori = []
     n_giorni = (data_a - data_da).days + 1
     for i in range(n_giorni):
         giorno = data_da + _dt.timedelta(days=i)
-        ws = ws_template if i == 0 else wb.copy_worksheet(ws_template)
+        ws = wb.copy_worksheet(ws_pristine)
         ws.title = giorno.strftime("%d-%m-%Y")
-        _compila_rbc(ws, client, caseificio_id, giorno)
+        _compila_rbc(ws, client, caseificio_id, giorno, errori=errori)
 
+    del wb["_pristine_rbc"]
     wb.save(output_path)
-    return output_path
+    return output_path, errori
