@@ -20,8 +20,21 @@
 #     SOLO se il caseificio stesso e' DOP (caseifici.is_dop).
 #     Se il caseificio non e' DOP, quei blocchi non vengono
 #     nemmeno considerati.
-#   - i prodotti finiti elencano SEMPRE tutti i prodotti attivi
-#     (tabella Prodotti), anche con quantita' 0 quel giorno.
+#   - i prodotti finiti elencano SOLO i prodotti REALMENTE prodotti
+#     (kg_totale>0) almeno una volta nel PERIODO selezionato (mese
+#     o settimana) - corretto il 27/08 su richiesta esplicita
+#     dell'utente: se in quel periodo non hai mai fatto la
+#     delattosata, la delattosata non deve comparire in NESSUN
+#     giorno del periodo (prima compariva sempre a 0, sbagliato).
+#     Se pero' l'hai prodotta anche un solo giorno del periodo,
+#     compare in TUTTI i giorni del periodo (anche a 0 nei giorni
+#     in cui quel giorno specifico non l'hai fatta), per poter
+#     confrontare colonna per colonna tra un giorno e l'altro.
+#
+# VENDITE DI LATTE (corretto il 27/08): NESSUN tetto massimo - se
+# vendi a 10 destinatari diversi lo stesso giorno, compaiono tutte
+# e 10 le righe (il template ne prevedeva 2 per riga fissa, ora si
+# aggiungono righe extra automaticamente quando servono).
 #
 # LATTE CONGELATO/SCONGELATO (confermato dall'utente 27/08):
 #   - latte SCONGELATO che rientra in produzione -> va tra i
@@ -236,8 +249,10 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
     return delta
 
 
-def _prodotti_finiti(client, caseificio_id, data_giorno):
-    """Tutti i prodotti attivi/visibili in Produzioni, SEMPRE elencati anche a quantita' 0."""
+def _prodotti_ammessi_nel_periodo(client, caseificio_id, data_da, data_a):
+    """Elenco prodotti (attivi, visibili in Produzioni) che sono stati REALMENTE prodotti
+    (kg_totale>0) almeno un giorno nel periodo [data_da, data_a] - dinamico, richiesto
+    dall'utente 27/08: un prodotto mai fatto nel periodo non deve comparire in nessun giorno."""
     prodotti = (
         client.table("prodotti")
         .select("*")
@@ -248,8 +263,24 @@ def _prodotti_finiti(client, caseificio_id, data_giorno):
         .execute()
         .data
     )
+    if not prodotti:
+        return []
+    ids = [p["id"] for p in prodotti]
+    produzioni_periodo = (
+        client.table("produzioni").select("prodotto_id, kg_totale")
+        .in_("prodotto_id", ids).gte("data", str(data_da)).lte("data", str(data_a))
+        .execute().data
+    )
+    ids_usati = {r["prodotto_id"] for r in produzioni_periodo if float(r.get("kg_totale") or 0) > 0}
+    return [p for p in prodotti if p["id"] in ids_usati]
+
+
+def _prodotti_finiti(client, caseificio_id, data_giorno, prodotti_ammessi):
+    """Una riga per ciascun prodotto GIA' FILTRATO (vedi _prodotti_ammessi_nel_periodo),
+    con la produzione di QUESTO giorno (anche 0, se quel giorno specifico non l'ha fatto
+    ma lo ha fatto in un altro giorno del periodo)."""
     righe = []
-    for p in prodotti:
+    for p in prodotti_ammessi:
         rec = (
             client.table("produzioni")
             .select("*")
@@ -321,10 +352,40 @@ def _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodo
     return totale_latte
 
 
-def _compila_tr(ws, client, caseificio_id, data_giorno):
+def _scrivi_vendite(ws, riga_inizio, vendite):
+    """Scrive le vendite di latte del giorno, 2 destinatari per riga (colonne J/K/L e
+    M/N/O) - inserisce righe extra automaticamente se ce ne sono piu' di 2, NESSUN tetto
+    massimo (corretto il 27/08 su richiesta esplicita - prima erano fisse a 2)."""
+    n_coppie = max(1, -(-len(vendite) // 2)) if vendite else 1  # arrotonda per eccesso, min 1
+    delta = n_coppie - 1  # il template ha gia' 1 riga base per le vendite
+    if delta > 0:
+        ws.insert_rows(riga_inizio + 1, delta)
+        for i in range(delta):
+            r = riga_inizio + 1 + i
+            _copia_stile_riga(ws, riga_inizio, r, ["G", "H", "I", "J", "K", "L", "M", "N", "O"])
+    for i in range(0, len(vendite), 2):
+        r = riga_inizio + i // 2
+        v1 = vendite[i]
+        ws[f"J{r}"] = round(float(v1.get("kg") or 0))
+        ws[f"K{r}"] = v1.get("ddt") or ""
+        ws[f"L{r}"] = (v1.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+        if i + 1 < len(vendite):
+            v2 = vendite[i + 1]
+            ws[f"M{r}"] = round(float(v2.get("kg") or 0))
+            ws[f"N{r}"] = v2.get("ddt") or ""
+            ws[f"O{r}"] = (v2.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+    return delta
+
+
+def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     """Scrive i dati di UN giorno su UN foglio 'tr' worksheet gia' aperto - separata da
     genera_tr() (apertura/salvataggio file) cosi' si puo' riusare dentro un workbook
-    multi-giorno (vedi genera_tr_periodo), stessa idea di _compila_mbc/_compila_rbc."""
+    multi-giorno (vedi genera_tr_periodo), stessa idea di _compila_mbc/_compila_rbc.
+    prodotti_ammessi: elenco gia' filtrato per il periodo (vedi _prodotti_ammessi_nel_periodo).
+    Se None (chiamata per un singolo giorno, senza un periodo di riferimento), si calcola
+    usando SOLO quel giorno come periodo."""
+    if prodotti_ammessi is None:
+        prodotti_ammessi = _prodotti_ammessi_nel_periodo(client, caseificio_id, data_giorno, data_giorno)
     is_dop = _caseificio_is_dop(client, caseificio_id)
     offset = 0
     totali = {"bufala_dop": 0.0, "bufala": 0.0, "vaccino": 0.0}
@@ -393,7 +454,6 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
     riga_lav_intest = 55 + offset  # intestazioni fisse "latte destinato al congelamento"/"latte venduto"
     riga_lav1_val = 57 + offset    # valori sotto le etichette "buf dop/buf non dop/dop declassato/delattosata" (riga 56)
     riga_lav2_val = 59 + offset    # valori sotto le etichette "cagliata b/v, buf/vac per mista, vaccino" (riga 58)
-    riga_giac1 = 61 + offset       # giacenza bufala dop / latte di buf
 
     resa = _resa_dop_giorno(client, caseificio_id, data_giorno)
     kg_buf_dop = registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
@@ -416,7 +476,7 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
     ws[f"D{riga_lav2_val}"] = round(kg_vac_mista) if kg_vac_mista else 0
     ws[f"E{riga_lav2_val}"] = round(kg_vaccino_trasf) if kg_vaccino_trasf else 0
 
-    # latte destinato al congelamento (uscita - opposto dello scongelamento sopra)
+    # latte destinato al congelamento (uscita - opposto dello scongelamento sezione ingresso)
     movimenti_uscita = (
         client.table("movimenti_congelato").select("*")
         .eq("caseificio_id", caseificio_id).eq("data", str(data_giorno)).eq("tipo", "congelamento")
@@ -427,7 +487,7 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
     ws[f"G{riga_lav_intest + 1}"] = round(kg_congelamento_uscita) if kg_congelamento_uscita else ""
     ws[f"I{riga_lav_intest + 1}"] = ddt_congelamento_uscita
 
-    # latte venduto (fino a 2 vendite quel giorno, come gia' fatto per i caseifici DOP in MBC)
+    # latte venduto (NESSUN tetto massimo - righe extra inserite automaticamente se servono)
     try:
         vendite_giorno = (
             client.table("vendite_latte_destinatari")
@@ -437,26 +497,21 @@ def _compila_tr(ws, client, caseificio_id, data_giorno):
         )
     except Exception:
         vendite_giorno = []
-    if len(vendite_giorno) >= 1:
-        v = vendite_giorno[0]
-        ws[f"J{riga_lav_intest + 1}"] = round(float(v.get("kg") or 0))
-        ws[f"K{riga_lav_intest + 1}"] = v.get("ddt") or ""
-        ws[f"L{riga_lav_intest + 1}"] = (v.get("destinatari_vendita") or {}).get("ragione_sociale", "")
-    if len(vendite_giorno) >= 2:
-        v = vendite_giorno[1]
-        ws[f"M{riga_lav_intest + 1}"] = round(float(v.get("kg") or 0))
-        ws[f"N{riga_lav_intest + 1}"] = v.get("ddt") or ""
-        ws[f"O{riga_lav_intest + 1}"] = (v.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+    delta_vendite = _scrivi_vendite(ws, riga_lav_intest + 1, vendite_giorno)
+    offset += delta_vendite
 
     # giacenza di chiusura (bufala dop / bufala non-dop) - dal Registro
+    riga_giac1 = 61 + offset       # giacenza bufala dop / latte di buf
     ws[f"B{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala_dop", data_giorno))
     ws[f"D{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala", data_giorno))
 
     # ------------------------------------------------------------
     # SEZIONE PRODOTTI FINITI (righe 67-72 nel template originale, si spostano con l'offset)
+    # SOLO i prodotti realmente prodotti nel periodo selezionato (vedi prodotti_ammessi) -
+    # dinamico, corretto il 27/08.
     # ------------------------------------------------------------
     riga_prod = 67 + offset + 1  # +1: la riga 67 e' l'intestazione, i dati partono dalla successiva
-    prodotti = _prodotti_finiti(client, caseificio_id, data_giorno)
+    prodotti = _prodotti_finiti(client, caseificio_id, data_giorno, prodotti_ammessi)
     n_righe_template_prodotti = 5  # righe 68-72 nel template originale
 
     delta_prod = len(prodotti) - n_righe_template_prodotti
@@ -506,12 +561,17 @@ def genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path):
     ws_pristine = wb[FOGLIO]
     ws_pristine.title = "_pristine_tr"
 
+    # calcolato UNA SOLA VOLTA per tutto il periodo (non per ogni giorno): un prodotto
+    # compare in tutti i giorni del periodo se e' stato fatto almeno un giorno, altrimenti
+    # in nessuno - vedi nota in cima al file (corretto 27/08).
+    prodotti_ammessi = _prodotti_ammessi_nel_periodo(client, caseificio_id, data_da, data_a)
+
     n_giorni = (data_a - data_da).days + 1
     for i in range(n_giorni):
         giorno = data_da + _dt.timedelta(days=i)
         ws = wb.copy_worksheet(ws_pristine)
         ws.title = giorno.strftime("%d-%m-%Y")
-        _compila_tr(ws, client, caseificio_id, giorno)
+        _compila_tr(ws, client, caseificio_id, giorno, prodotti_ammessi=prodotti_ammessi)
 
     del wb["_pristine_tr"]
     wb.save(output_path)
