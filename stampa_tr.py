@@ -71,6 +71,24 @@ from stampa_mbc import get_registro_giacenza_apertura, get_prodotto_e_produzione
 
 FOGLIO = "tr"
 
+
+def _set(ws, coord, value):
+    """Scrive in una cella SEMPRE in modo sicuro, anche se e' una cella "secondaria" di una
+    cella unita (merge) - openpyxl lancia AttributeError se si scrive direttamente su una
+    MergedCell (solo la cella in alto a sinistra della fusione e' scrivibile). Qui troviamo
+    quella cella "vera" e scriviamo li'. Corretto il 29/08 dopo un crash reale su una cella
+    fusa nella sezione Lavorazione - da questo momento in poi va SEMPRE usata questa funzione
+    al posto di ws[coord] = valore, ovunque nel foglio tr."""
+    cell = ws[coord]
+    if type(cell).__name__ == "MergedCell":
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= cell.row <= rng.max_row and rng.min_col <= cell.column <= rng.max_col:
+                ws.cell(row=rng.min_row, column=rng.min_col, value=value)
+                return
+        return  # cella fusa ma range non trovato (non dovrebbe succedere) - non blocchiamo la generazione
+    cell.value = value
+
+
 # (nome, riga_inizio, n_righe_template, tipi_conferitore, tipo_latte, richiede_caseificio_dop)
 # NOTA: tolti "semilavorato_bufala"/"semilavorato_vaccino" - non esistono nel template reale,
 # erano un errore di mappatura (le righe 43-46 sono in realta' il blocco CONGELATO).
@@ -233,14 +251,14 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
     for i, dato in enumerate(righe_dati):
         r = riga_inizio + i
         if i == 0 and label_originale:
-            ws[f"A{r}"] = label_originale
-        ws[f"B{r}"] = dato["provenienza"]
-        ws[f"D{r}"] = dato["codice_asl"]
-        ws[f"G{r}"] = dato["kg"]
-        ws[f"H{r}"] = dato["ddt"]
-        ws[f"I{r}"] = _acidita_random() if dato["kg"] > 0 else ""
-        ws[f"J{r}"] = _temperatura_random() if dato["kg"] > 0 else ""
-        ws[f"K{r}"] = "OK" if dato["kg"] > 0 else ""
+            _set(ws, f"A{r}", label_originale)
+        _set(ws, f"B{r}", dato["provenienza"])
+        _set(ws, f"D{r}", dato["codice_asl"])
+        _set(ws, f"G{r}", dato["kg"])
+        _set(ws, f"H{r}", dato["ddt"])
+        _set(ws, f"I{r}", _acidita_random() if dato["kg"] > 0 else "")
+        _set(ws, f"J{r}", _temperatura_random() if dato["kg"] > 0 else "")
+        _set(ws, f"K{r}", "OK" if dato["kg"] > 0 else "")
 
     if merge_a and n_dati > 1:
         ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
@@ -366,14 +384,14 @@ def _scrivi_vendite(ws, riga_inizio, vendite):
     for i in range(0, len(vendite), 2):
         r = riga_inizio + i // 2
         v1 = vendite[i]
-        ws[f"J{r}"] = round(float(v1.get("kg") or 0))
-        ws[f"K{r}"] = v1.get("ddt") or ""
-        ws[f"L{r}"] = (v1.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+        _set(ws, f"J{r}", round(float(v1.get("kg") or 0)))
+        _set(ws, f"K{r}", v1.get("ddt") or "")
+        _set(ws, f"L{r}", (v1.get("destinatari_vendita") or {}).get("ragione_sociale", ""))
         if i + 1 < len(vendite):
             v2 = vendite[i + 1]
-            ws[f"M{r}"] = round(float(v2.get("kg") or 0))
-            ws[f"N{r}"] = v2.get("ddt") or ""
-            ws[f"O{r}"] = (v2.get("destinatari_vendita") or {}).get("ragione_sociale", "")
+            _set(ws, f"M{r}", round(float(v2.get("kg") or 0)))
+            _set(ws, f"N{r}", v2.get("ddt") or "")
+            _set(ws, f"O{r}", (v2.get("destinatari_vendita") or {}).get("ragione_sociale", ""))
     return delta
 
 
@@ -439,12 +457,12 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     # --- Totali (celle originali erano formule #REF! parziali - qui corretti sommando
     #     TUTTE le righe reali del blocco, non solo le prime due come nel template originale) ---
     riga_tot = 48 + offset
-    ws[f"E{riga_tot}"] = totali["bufala_dop"]
-    ws[f"E{riga_tot + 1}"] = totali["bufala"]
-    ws[f"E{riga_tot + 2}"] = totali["vaccino"]
+    _set(ws, f"E{riga_tot}", totali["bufala_dop"])
+    _set(ws, f"E{riga_tot + 1}", totali["bufala"])
+    _set(ws, f"E{riga_tot + 2}", totali["vaccino"])
 
     # --- Giacenza di apertura DOP (dal Registro) ---
-    ws["E8"] = get_registro_giacenza_apertura(client, caseificio_id, data_giorno)
+    _set(ws, "E8", get_registro_giacenza_apertura(client, caseificio_id, data_giorno))
 
     # ------------------------------------------------------------
     # SEZIONE LAVORAZIONE (righe 55-61 nel template originale, si spostano con l'offset)
@@ -460,21 +478,21 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     kg_buf_non_dop = registro_calc.trasformato(client, caseificio_id, "bufala", data_giorno)
     kg_buf_dop_declassato = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=False, escludi_ricotta=True)
     kg_buf_dop_delattosata = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=True, escludi_ricotta=True, solo_nome="senza lattosio")
-    ws[f"A{riga_lav1_val}"] = round(kg_buf_dop) if kg_buf_dop else 0
-    ws[f"B{riga_lav1_val}"] = round(kg_buf_non_dop) if kg_buf_non_dop else 0
-    ws[f"C{riga_lav1_val}"] = round(kg_buf_dop_declassato) if kg_buf_dop_declassato else 0
-    ws[f"E{riga_lav1_val}"] = round(kg_buf_dop_delattosata) if kg_buf_dop_delattosata else 0
+    _set(ws, f"A{riga_lav1_val}", round(kg_buf_dop) if kg_buf_dop else 0)
+    _set(ws, f"B{riga_lav1_val}", round(kg_buf_non_dop) if kg_buf_non_dop else 0)
+    _set(ws, f"C{riga_lav1_val}", round(kg_buf_dop_declassato) if kg_buf_dop_declassato else 0)
+    _set(ws, f"E{riga_lav1_val}", round(kg_buf_dop_delattosata) if kg_buf_dop_delattosata else 0)
 
     kg_cagliata_b = sum(r["kg"] for r in righe_cag_buf)
     kg_cagliata_v = sum(r["kg"] for r in righe_cag_vacc)
     kg_buf_mista = registro_calc.mista_consumato(client, caseificio_id, "bufala", data_giorno)
     kg_vac_mista = registro_calc.mista_consumato(client, caseificio_id, "vaccino", data_giorno)
     kg_vaccino_trasf = registro_calc.trasformato(client, caseificio_id, "vaccino", data_giorno)
-    ws[f"A{riga_lav2_val}"] = round(kg_cagliata_b) if kg_cagliata_b else 0
-    ws[f"B{riga_lav2_val}"] = round(kg_cagliata_v) if kg_cagliata_v else 0
-    ws[f"C{riga_lav2_val}"] = round(kg_buf_mista) if kg_buf_mista else 0
-    ws[f"D{riga_lav2_val}"] = round(kg_vac_mista) if kg_vac_mista else 0
-    ws[f"E{riga_lav2_val}"] = round(kg_vaccino_trasf) if kg_vaccino_trasf else 0
+    _set(ws, f"A{riga_lav2_val}", round(kg_cagliata_b) if kg_cagliata_b else 0)
+    _set(ws, f"B{riga_lav2_val}", round(kg_cagliata_v) if kg_cagliata_v else 0)
+    _set(ws, f"C{riga_lav2_val}", round(kg_buf_mista) if kg_buf_mista else 0)
+    _set(ws, f"D{riga_lav2_val}", round(kg_vac_mista) if kg_vac_mista else 0)
+    _set(ws, f"E{riga_lav2_val}", round(kg_vaccino_trasf) if kg_vaccino_trasf else 0)
 
     # latte destinato al congelamento (uscita - opposto dello scongelamento sezione ingresso)
     movimenti_uscita = (
@@ -484,8 +502,8 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     )
     kg_congelamento_uscita = sum(float(m.get("kg") or 0) for m in movimenti_uscita)
     ddt_congelamento_uscita = ", ".join(m["ddt"] for m in movimenti_uscita if m.get("ddt"))
-    ws[f"G{riga_lav_intest + 1}"] = round(kg_congelamento_uscita) if kg_congelamento_uscita else ""
-    ws[f"I{riga_lav_intest + 1}"] = ddt_congelamento_uscita
+    _set(ws, f"G{riga_lav_intest + 1}", round(kg_congelamento_uscita) if kg_congelamento_uscita else "")
+    _set(ws, f"I{riga_lav_intest + 1}", ddt_congelamento_uscita)
 
     # latte venduto (NESSUN tetto massimo - righe extra inserite automaticamente se servono)
     try:
@@ -502,8 +520,8 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
 
     # giacenza di chiusura (bufala dop / bufala non-dop) - dal Registro
     riga_giac1 = 61 + offset       # giacenza bufala dop / latte di buf
-    ws[f"B{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala_dop", data_giorno))
-    ws[f"D{riga_giac1}"] = round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala", data_giorno))
+    _set(ws, f"B{riga_giac1}", round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala_dop", data_giorno)))
+    _set(ws, f"D{riga_giac1}", round(registro_calc.giacenza_chiusura(client, caseificio_id, "bufala", data_giorno)))
 
     # ------------------------------------------------------------
     # SEZIONE PRODOTTI FINITI (righe 67-72 nel template originale, si spostano con l'offset)
@@ -526,11 +544,11 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
 
     for i, prod in enumerate(prodotti):
         r = riga_prod + i
-        ws[f"A{r}"] = prod["nome"]
-        ws[f"D{r}"] = prod["quantita"]
-        ws[f"F{r}"] = data_giorno.strftime("%d/%m/%Y") if prod["quantita"] > 0 else ""
-        ws[f"H{r}"] = prod["diretta"]
-        ws[f"J{r}"] = prod["terzi"]
+        _set(ws, f"A{r}", prod["nome"])
+        _set(ws, f"D{r}", prod["quantita"])
+        _set(ws, f"F{r}", data_giorno.strftime("%d/%m/%Y") if prod["quantita"] > 0 else "")
+        _set(ws, f"H{r}", prod["diretta"])
+        _set(ws, f"J{r}", prod["terzi"])
 
 
 def genera_tr(client, caseificio_id, data_giorno, output_path, copia_da_template=True):
