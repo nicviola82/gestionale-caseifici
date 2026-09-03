@@ -73,29 +73,20 @@ FOGLIO = "tr"
 
 
 def _set(ws, coord, value):
-    """Scrive in una cella SEMPRE in modo sicuro, anche se e' una cella "secondaria" di una
-    cella unita (merge) - openpyxl lancia AttributeError se si scrive direttamente su una
-    MergedCell (solo la cella in alto a sinistra della fusione e' scrivibile). Corretto il
-    29/08 per la seconda volta: anche provare a smergiare puo' fallire (KeyError) se le
-    informazioni sulle fusioni sono rimaste incoerenti dopo un insert_rows - limite noto di
-    openpyxl. Questa versione e' quindi DIFENSIVA AL MASSIMO: prova a smergiare tutto quello
-    che copre la cella, e se anche questo fallisce non blocca MAI la generazione del foglio
-    (nel caso estremo quella singola cella resta vuota, ma il resto del documento si genera
-    comunque) - meglio un dato mancante che un errore che blocca tutto. Va SEMPRE usata al
-    posto di ws[coord] = valore, ovunque nel foglio tr."""
-    try:
-        cell = ws[coord]
-        if type(cell).__name__ == "MergedCell":
-            for rng in list(ws.merged_cells.ranges):
-                if rng.min_row <= cell.row <= rng.max_row and rng.min_col <= cell.column <= rng.max_col:
-                    try:
-                        ws.unmerge_cells(str(rng))
-                    except Exception:
-                        pass
-            cell = ws[coord]
-        cell.value = value
-    except Exception:
-        pass  # non blocchiamo mai la generazione dell'intero foglio per una singola cella
+    """Scrive in una cella - versione 3, 29/08, LA PIU' SEMPLICE E SICURA POSSIBILE dopo due
+    tentativi falliti: se la cella e' una MergedCell (cella "secondaria" di una fusione),
+    SALTA la scrittura e basta - non prova piu' a smergiare o a trovare una cella alternativa,
+    perche' anche quei tentativi hanno chiamato a loro volta funzioni di openpyxl (unmerge_cells,
+    ws.cell) che possono fallire allo stesso modo se le informazioni sulle fusioni sono rimaste
+    incoerenti dopo un insert_rows (limite noto di openpyxl, non risolvibile in modo affidabile
+    lato nostro). Meglio una cella vuota che un crash di tutto il foglio. Le fusioni vengono
+    comunque rimosse PRIMA di scrivere in piu' punti del foglio (vedi _compila_tr), quindi in
+    condizioni normali questo ramo non dovrebbe quasi mai scattare. Va SEMPRE usata al posto di
+    ws[coord] = valore, ovunque nel foglio tr."""
+    cell = ws[coord]
+    if type(cell).__name__ == "MergedCell":
+        return
+    cell.value = value
 
 
 # (nome, riga_inizio, n_righe_template, tipi_conferitore, tipo_latte, richiede_caseificio_dop)
@@ -259,12 +250,11 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
         _set(ws, f"J{r}", _temperatura_random() if dato["kg"] > 0 else "")
         _set(ws, f"K{r}", "OK" if dato["kg"] > 0 else "")
 
-    if n_dati > 1 and label_originale:
-        try:
-            ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
-            _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])
-        except Exception:
-            pass  # cosmetico: se fallisce, l'etichetta resta solo sulla prima riga, nessun crash
+    # NOTA 29/08 (terzo giro): NON si ricrea piu' la fusione cosmetica dell'etichetta a fine
+    # blocco - ogni merge_cells() creato durante la generazione dinamica e' un rischio di
+    # corrompere lo stato interno di openpyxl per le scritture successive (causa reale di due
+    # crash). L'etichetta resta scritta solo sulla prima riga del blocco: leggermente meno
+    # elegante, ma il documento si genera sempre in modo affidabile.
 
     return delta
 
@@ -482,6 +472,14 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     # Mappata sui dati gia' calcolati nel Registro (registro_calc.py) - stessi numeri che
     # vedi nella pagina Registro, nessun ricalcolo parallelo.
     # ------------------------------------------------------------
+    # rete di sicurezza extra (29/08): ripulisce di nuovo eventuali fusioni residue prima di
+    # scrivere qui, nel caso ne fosse comparsa qualcuna durante l'inserimento righe qui sopra
+    for rng in list(ws.merged_cells.ranges):
+        try:
+            ws.unmerge_cells(str(rng))
+        except Exception:
+            pass
+
     riga_lav_intest = 55 + offset  # intestazioni fisse "latte destinato al congelamento"/"latte venduto"
     riga_lav1_val = 57 + offset    # valori sotto le etichette "buf dop/buf non dop/dop declassato/delattosata" (riga 56)
     riga_lav2_val = 59 + offset    # valori sotto le etichette "cagliata b/v, buf/vac per mista, vaccino" (riga 58)
@@ -541,6 +539,14 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     # SOLO i prodotti realmente prodotti nel periodo selezionato (vedi prodotti_ammessi) -
     # dinamico, corretto il 27/08.
     # ------------------------------------------------------------
+    # rete di sicurezza extra (29/08): ripulisce di nuovo eventuali fusioni residue, dato che
+    # _scrivi_vendite qui sopra ha inserito righe
+    for rng in list(ws.merged_cells.ranges):
+        try:
+            ws.unmerge_cells(str(rng))
+        except Exception:
+            pass
+
     riga_prod = 67 + offset + 1  # +1: la riga 67 e' l'intestazione, i dati partono dalla successiva
     prodotti = _prodotti_finiti(client, caseificio_id, data_giorno, prodotti_ammessi)
     n_righe_template_prodotti = 5  # righe 68-72 nel template originale
