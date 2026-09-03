@@ -75,18 +75,27 @@ FOGLIO = "tr"
 def _set(ws, coord, value):
     """Scrive in una cella SEMPRE in modo sicuro, anche se e' una cella "secondaria" di una
     cella unita (merge) - openpyxl lancia AttributeError se si scrive direttamente su una
-    MergedCell (solo la cella in alto a sinistra della fusione e' scrivibile). Qui troviamo
-    quella cella "vera" e scriviamo li'. Corretto il 29/08 dopo un crash reale su una cella
-    fusa nella sezione Lavorazione - da questo momento in poi va SEMPRE usata questa funzione
-    al posto di ws[coord] = valore, ovunque nel foglio tr."""
-    cell = ws[coord]
-    if type(cell).__name__ == "MergedCell":
-        for rng in ws.merged_cells.ranges:
-            if rng.min_row <= cell.row <= rng.max_row and rng.min_col <= cell.column <= rng.max_col:
-                ws.cell(row=rng.min_row, column=rng.min_col, value=value)
-                return
-        return  # cella fusa ma range non trovato (non dovrebbe succedere) - non blocchiamo la generazione
-    cell.value = value
+    MergedCell (solo la cella in alto a sinistra della fusione e' scrivibile). Corretto il
+    29/08 per la seconda volta: anche provare a smergiare puo' fallire (KeyError) se le
+    informazioni sulle fusioni sono rimaste incoerenti dopo un insert_rows - limite noto di
+    openpyxl. Questa versione e' quindi DIFENSIVA AL MASSIMO: prova a smergiare tutto quello
+    che copre la cella, e se anche questo fallisce non blocca MAI la generazione del foglio
+    (nel caso estremo quella singola cella resta vuota, ma il resto del documento si genera
+    comunque) - meglio un dato mancante che un errore che blocca tutto. Va SEMPRE usata al
+    posto di ws[coord] = valore, ovunque nel foglio tr."""
+    try:
+        cell = ws[coord]
+        if type(cell).__name__ == "MergedCell":
+            for rng in list(ws.merged_cells.ranges):
+                if rng.min_row <= cell.row <= rng.max_row and rng.min_col <= cell.column <= rng.max_col:
+                    try:
+                        ws.unmerge_cells(str(rng))
+                    except Exception:
+                        pass
+            cell = ws[coord]
+        cell.value = value
+    except Exception:
+        pass  # non blocchiamo mai la generazione dell'intero foglio per una singola cella
 
 
 # (nome, riga_inizio, n_righe_template, tipi_conferitore, tipo_latte, richiede_caseificio_dop)
@@ -212,24 +221,15 @@ def _copia_stile_riga(ws, riga_origine, riga_dest, colonne):
 COLONNE_BLOCCO = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
 
 
-def _trova_merge_colonna_a(ws, riga_inizio):
-    """Trova il merge verticale della colonna A (etichetta categoria) che inizia a riga_inizio,
-    se esiste. Ritorna il MergedCellRange o None."""
-    for r in list(ws.merged_cells.ranges):
-        if r.min_col == 1 and r.max_col == 1 and r.min_row == riga_inizio:
-            return r
-    return None
-
-
 def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_originale):
     """righe_dati vuoto => blocco assente (0 righe, nessun conferitore/evento).
     righe_dati non vuoto => il blocco resta SEMPRE (anche a 0 kg, per i conferitori fissi).
     n_righe_template puo' essere 0 (blocco nuovo, non esisteva nel template originale) - in
-    quel caso, se ci sono dati, le righe vengono semplicemente inserite da zero."""
-    merge_a = _trova_merge_colonna_a(ws, riga_inizio)
-    if merge_a:
-        ws.unmerge_cells(str(merge_a))
-
+    quel caso, se ci sono dati, le righe vengono semplicemente inserite da zero.
+    NOTA 29/08: non si crea piu' nessuna fusione (merge) DURANTE l'inserimento di righe -
+    openpyxl non aggiorna in modo affidabile le fusioni quando si inseriscono/eliminano righe
+    piu' volte di seguito (causa di crash reali, vedi _set) - le uniche fusioni create sono
+    quella cosmetica dell'etichetta a fine blocco, e solo in modo protetto."""
     if not righe_dati:
         if n_righe_template > 0:
             ws.delete_rows(riga_inizio, n_righe_template)
@@ -244,7 +244,6 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
         for i in range(delta):
             r = riga_inizio + n_righe_template + i
             _copia_stile_riga(ws, riga_stile, r, COLONNE_BLOCCO)
-            ws.merge_cells(f"B{r}:C{r}")
     elif delta < 0:
         ws.delete_rows(riga_inizio + n_dati, -delta)
 
@@ -260,9 +259,12 @@ def _scrivi_blocco(ws, riga_inizio, n_righe_template, righe_dati, label_original
         _set(ws, f"J{r}", _temperatura_random() if dato["kg"] > 0 else "")
         _set(ws, f"K{r}", "OK" if dato["kg"] > 0 else "")
 
-    if merge_a and n_dati > 1:
-        ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
-        _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])
+    if n_dati > 1 and label_originale:
+        try:
+            ws.merge_cells(f"A{riga_inizio}:A{riga_inizio + n_dati - 1}")
+            _copia_stile_riga(ws, riga_inizio, riga_inizio, ["A"])
+        except Exception:
+            pass  # cosmetico: se fallisce, l'etichetta resta solo sulla prima riga, nessun crash
 
     return delta
 
@@ -404,6 +406,17 @@ def _compila_tr(ws, client, caseificio_id, data_giorno, prodotti_ammessi=None):
     usando SOLO quel giorno come periodo."""
     if prodotti_ammessi is None:
         prodotti_ammessi = _prodotti_ammessi_nel_periodo(client, caseificio_id, data_giorno, data_giorno)
+    # CORREZIONE 29/08: rimuove TUTTE le fusioni (merge) presenti nel template PRIMA di
+    # inserire/eliminare qualunque riga - openpyxl non tiene aggiornate in modo affidabile le
+    # fusioni quando si inseriscono/eliminano righe piu' volte di seguito (causa reale di due
+    # crash precedenti). Partire senza nessuna fusione elimina il problema alla radice; le
+    # uniche fusioni ricreate sono quelle cosmetiche gestite direttamente da _scrivi_blocco,
+    # in modo protetto.
+    for rng in list(ws.merged_cells.ranges):
+        try:
+            ws.unmerge_cells(str(rng))
+        except Exception:
+            pass
     is_dop = _caseificio_is_dop(client, caseificio_id)
     offset = 0
     totali = {"bufala_dop": 0.0, "bufala": 0.0, "vaccino": 0.0}
