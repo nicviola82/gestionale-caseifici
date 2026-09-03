@@ -419,7 +419,7 @@ for c in conferitori:
     })
 
 if righe_tabella:
-    st.dataframe(righe_tabella, hide_index=True, use_container_width=True)
+    st.dataframe(righe_tabella, hide_index=True, width="stretch")
     try:
         df_conferitori = pd.DataFrame(righe_tabella)
         csv_bytes = df_conferitori.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
