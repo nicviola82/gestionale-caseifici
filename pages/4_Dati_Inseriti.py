@@ -107,7 +107,7 @@ for c in conferitori:
     column_config[f"c{c['id']}_kg"] = st.column_config.NumberColumn(f"{lbl}\nKG", min_value=0.0, step=1.0)
 
 df_modificato = st.data_editor(
-    df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_conferimenti"
+    df, column_config=column_config, hide_index=True, width="stretch", key="griglia_conferimenti"
 )
 
 if is_owner():
