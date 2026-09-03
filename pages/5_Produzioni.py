@@ -161,7 +161,7 @@ for p in prodotti:
             st.warning(f"'{p['nome']}' ha 'consenti piu' destinatari' attivo ma nessuna colonna configurata: vai su Prodotti > Modifica per nominarle. Per ora usa una sola colonna 'v.ind'.")
 
 df_modificato = st.data_editor(
-    df, column_config=column_config, hide_index=True, use_container_width=True, key="griglia_produzioni"
+    df, column_config=column_config, hide_index=True, width="stretch", key="griglia_produzioni"
 )
 
 if is_owner():
