@@ -5,12 +5,14 @@
 # ============================================================
 import streamlit as st
 import datetime as _dt
+import zipfile
 from db import get_client
 from auth import login_form, logout_button
 from stampa_mbc import genera_mbc, genera_mbc_periodo
 from stampa_rbc import genera_rbc, genera_rbc_periodo
 from stampa_tr import genera_tr, genera_tr_periodo
 from stampa_tr_template import genera_tr_template, genera_tr_template_periodo
+from stampa_tr_pdf import genera_tr_pdf, genera_tr_pdf_periodo
 from ui_helpers import mostra_header_caseificio
 
 st.set_page_config(page_title="Fogli Stampabili", layout="wide")
@@ -103,42 +105,55 @@ if modalita == "Un singolo giorno":
     st.divider()
 
     # ------------------------------------------------------------
-    # tr (righe dinamiche in base ai conferitori attivi) - DUE VERSIONI in prova (29/08):
-    # "nuovo metodo" = foglio costruito da zero (nessun template Excel copiato);
-    # "vecchio metodo" = basato sul template originale, con le correzioni sui merge fatte
-    # finora. Tenute entrambe finche' non si capisce quale funziona meglio in pratica.
+    # tr - PDF come formato principale (richiesto dall'utente 29/08: un Excel
+    # "non si capisce molto", un PDF e' un documento pronto da leggere/stampare).
+    # Le due versioni Excel restano disponibili sotto per chi le preferisce ancora.
     # ------------------------------------------------------------
     st.subheader("tr - Tabellone giornaliero")
-    st.caption("Righe: un conferitore attivo compare sempre (anche a 0 kg quel giorno); il blocco CONGELATO compare solo nei giorni con un vero scongelamento; i prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato.")
-    col_nuovo, col_vecchio = st.columns(2)
-    with col_nuovo:
-        st.caption("🆕 Nuovo metodo (foglio costruito da zero)")
-        if st.button("📄 Genera tr - nuovo metodo"):
-            output_path_tr = f"tr_nuovo_{data_giorno.strftime('%Y%m%d')}.xlsx"
-            genera_tr(client, caseificio_id, data_giorno, output_path_tr)
-            with open(output_path_tr, "rb") as f:
-                st.download_button(
-                    "⬇️ Scarica tr (nuovo metodo)",
-                    data=f.read(),
-                    file_name=output_path_tr,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_tr_nuovo_giorno",
-                )
-            st.success("tr (nuovo metodo) generato.")
-    with col_vecchio:
-        st.caption("📄 Vecchio metodo (basato sul template originale)")
-        if st.button("📄 Genera tr - vecchio metodo"):
-            output_path_tr2 = f"tr_template_{data_giorno.strftime('%Y%m%d')}.xlsx"
-            genera_tr_template(client, caseificio_id, data_giorno, output_path_tr2)
-            with open(output_path_tr2, "rb") as f:
-                st.download_button(
-                    "⬇️ Scarica tr (vecchio metodo)",
-                    data=f.read(),
-                    file_name=output_path_tr2,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_tr_vecchio_giorno",
-                )
-            st.success("tr (vecchio metodo) generato.")
+    st.caption("Le righe con dati (conferitori, lavorazione) compaiono solo se inserite quel giorno. I prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato (anche a 0 nei singoli giorni, per confrontare).")
+    if st.button("📄 Genera tr (PDF)", type="primary"):
+        output_path_pdf = f"tr_{data_giorno.strftime('%Y%m%d')}.pdf"
+        genera_tr_pdf(client, caseificio_id, data_giorno, output_path_pdf)
+        with open(output_path_pdf, "rb") as f:
+            st.download_button(
+                "⬇️ Scarica tr (PDF)",
+                data=f.read(),
+                file_name=output_path_pdf,
+                mime="application/pdf",
+                key="dl_tr_pdf_giorno",
+            )
+        st.success("tr (PDF) generato.")
+
+    with st.expander("Altri formati (Excel) - in prova"):
+        col_nuovo, col_vecchio = st.columns(2)
+        with col_nuovo:
+            st.caption("🆕 Nuovo metodo (foglio costruito da zero)")
+            if st.button("📄 Genera tr - nuovo metodo"):
+                output_path_tr = f"tr_nuovo_{data_giorno.strftime('%Y%m%d')}.xlsx"
+                genera_tr(client, caseificio_id, data_giorno, output_path_tr)
+                with open(output_path_tr, "rb") as f:
+                    st.download_button(
+                        "⬇️ Scarica tr (nuovo metodo)",
+                        data=f.read(),
+                        file_name=output_path_tr,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_tr_nuovo_giorno",
+                    )
+                st.success("tr (nuovo metodo) generato.")
+        with col_vecchio:
+            st.caption("📄 Vecchio metodo (basato sul template originale)")
+            if st.button("📄 Genera tr - vecchio metodo"):
+                output_path_tr2 = f"tr_template_{data_giorno.strftime('%Y%m%d')}.xlsx"
+                genera_tr_template(client, caseificio_id, data_giorno, output_path_tr2)
+                with open(output_path_tr2, "rb") as f:
+                    st.download_button(
+                        "⬇️ Scarica tr (vecchio metodo)",
+                        data=f.read(),
+                        file_name=output_path_tr2,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_tr_vecchio_giorno",
+                    )
+                st.success("tr (vecchio metodo) generato.")
 
 # ============================================================
 # MODALITA': PERIODO (3 file separati - uno per MBC, uno per RBC, uno per tr,
@@ -196,33 +211,50 @@ else:
     st.divider()
 
     st.subheader("tr - Tabellone giornaliero")
-    st.caption("Righe: un conferitore attivo compare sempre (anche a 0 kg quel giorno); il blocco CONGELATO compare solo nei giorni con un vero scongelamento; i prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato.")
-    col_nuovo_p, col_vecchio_p = st.columns(2)
-    with col_nuovo_p:
-        st.caption("🆕 Nuovo metodo (foglio costruito da zero)")
-        if st.button("📄 Genera tr del periodo - nuovo metodo"):
-            output_path_tr = f"tr_nuovo_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
-            genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path_tr)
-            with open(output_path_tr, "rb") as f:
-                st.download_button(
-                    "⬇️ Scarica tr del periodo (nuovo metodo)",
-                    data=f.read(),
-                    file_name=output_path_tr,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_tr_nuovo_periodo",
-                )
-            st.success(f"tr (nuovo metodo) generato: {n_giorni} fogli, uno per giorno.")
-    with col_vecchio_p:
-        st.caption("📄 Vecchio metodo (basato sul template originale)")
-        if st.button("📄 Genera tr del periodo - vecchio metodo"):
-            output_path_tr2 = f"tr_template_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
-            genera_tr_template_periodo(client, caseificio_id, data_da, data_a, output_path_tr2)
-            with open(output_path_tr2, "rb") as f:
-                st.download_button(
-                    "⬇️ Scarica tr del periodo (vecchio metodo)",
-                    data=f.read(),
-                    file_name=output_path_tr2,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_tr_vecchio_periodo",
-                )
-            st.success(f"tr (vecchio metodo) generato: {n_giorni} fogli, uno per giorno.")
+    st.caption("Le righe con dati (conferitori, lavorazione) compaiono solo se inserite quel giorno. I prodotti finiti mostrano solo quelli realmente fatti nel periodo selezionato (anche a 0 nei singoli giorni, per confrontare).")
+    if st.button("📄 Genera tr del periodo (PDF)", type="primary"):
+        percorsi_pdf = genera_tr_pdf_periodo(client, caseificio_id, data_da, data_a, "tr")
+        zip_path = f"tr_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for p in percorsi_pdf:
+                zf.write(p, arcname=p)
+        with open(zip_path, "rb") as f:
+            st.download_button(
+                "⬇️ Scarica tr del periodo (PDF, un file .zip con un PDF per giorno)",
+                data=f.read(),
+                file_name=zip_path,
+                mime="application/zip",
+                key="dl_tr_pdf_periodo",
+            )
+        st.success(f"tr (PDF) generato: {len(percorsi_pdf)} documenti, uno per giorno.")
+
+    with st.expander("Altri formati (Excel) - in prova"):
+        col_nuovo_p, col_vecchio_p = st.columns(2)
+        with col_nuovo_p:
+            st.caption("🆕 Nuovo metodo (foglio costruito da zero)")
+            if st.button("📄 Genera tr del periodo - nuovo metodo"):
+                output_path_tr = f"tr_nuovo_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
+                genera_tr_periodo(client, caseificio_id, data_da, data_a, output_path_tr)
+                with open(output_path_tr, "rb") as f:
+                    st.download_button(
+                        "⬇️ Scarica tr del periodo (nuovo metodo)",
+                        data=f.read(),
+                        file_name=output_path_tr,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_tr_nuovo_periodo",
+                    )
+                st.success(f"tr (nuovo metodo) generato: {n_giorni} fogli, uno per giorno.")
+        with col_vecchio_p:
+            st.caption("📄 Vecchio metodo (basato sul template originale)")
+            if st.button("📄 Genera tr del periodo - vecchio metodo"):
+                output_path_tr2 = f"tr_template_{data_da.strftime('%Y%m%d')}_{data_a.strftime('%Y%m%d')}.xlsx"
+                genera_tr_template_periodo(client, caseificio_id, data_da, data_a, output_path_tr2)
+                with open(output_path_tr2, "rb") as f:
+                    st.download_button(
+                        "⬇️ Scarica tr del periodo (vecchio metodo)",
+                        data=f.read(),
+                        file_name=output_path_tr2,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_tr_vecchio_periodo",
+                    )
+                st.success(f"tr (vecchio metodo) generato: {n_giorni} fogli, uno per giorno.")
