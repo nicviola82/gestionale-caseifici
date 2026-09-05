@@ -138,16 +138,20 @@ def _prodotti_ammessi_nel_periodo(client, caseificio_id, data_da, data_a):
 
 def _prodotti_finiti(client, prodotti_ammessi, data_giorno):
     """Prodotti gia' filtrati per periodo - qui restano visibili ANCHE a 0 (per confrontare
-    tra un giorno e l'altro), a differenza di conferitori/lavorazione."""
+    tra un giorno e l'altro), a differenza di conferitori/lavorazione. Lotto calcolato con la
+    stessa logica gia' usata in MBC/RBC (calcola_lotto), aggiunto il 29/08 su richiesta."""
+    from stampa_mbc import calcola_lotto
     righe = []
     for p in prodotti_ammessi:
         rec = (
             client.table("produzioni").select("*").eq("prodotto_id", p["id"]).eq("data", str(data_giorno))
             .execute().data
         )
+        totale = float(rec[0]["kg_totale"]) if rec and rec[0].get("kg_totale") else 0.0
         righe.append({
             "nome": p["nome"],
-            "totale": float(rec[0]["kg_totale"]) if rec and rec[0].get("kg_totale") else 0.0,
+            "lotto": calcola_lotto(p, data_giorno) if totale > 0 else "",
+            "totale": totale,
             "diretta": float(rec[0]["kg_diretta"]) if rec and rec[0].get("kg_diretta") else 0.0,
             "terzi": float(rec[0]["kg_terzi"]) if rec and rec[0].get("kg_terzi") else 0.0,
         })
@@ -288,25 +292,48 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
     ))
 
     # ---------------- SEZIONE 1: LATTE IN INGRESSO ----------------
+    # CORREZIONE 29/08: la giacenza di apertura va indicata PRIMA del latte conferito (non
+    # dopo i totali come prima), e va mostrata per ENTRAMBI i tipi di latte bufala (prima
+    # solo per il DOP). Nomenclatura uniformata come richiesto: "Latte di bufala MBC" per il
+    # DOP, "Latte di bufala" per il non-DOP - stessa terminologia usata ovunque nel documento.
+    elementi.append(Paragraph("LATTE IN INGRESSO", STILE_SEZIONE))
+    righe_giacenza_apertura = []
+    if is_dop:
+        giacenza_apertura_mbc = registro_calc.giacenza_apertura(client, caseificio_id, "bufala_dop", data_giorno)
+        righe_giacenza_apertura.append(["Giacenza di apertura — Latte di bufala MBC", f"{round(giacenza_apertura_mbc):,} kg".replace(",", ".")])
+    giacenza_apertura_buf = registro_calc.giacenza_apertura(client, caseificio_id, "bufala", data_giorno)
+    righe_giacenza_apertura.append(["Giacenza di apertura — Latte di bufala", f"{round(giacenza_apertura_buf):,} kg".replace(",", ".")])
+    t = Table(righe_giacenza_apertura, colWidths=[10 * cm, 4 * cm])
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("GRID", (0, 0), (-1, -1), 0.5, COLORE_GRIGIO_CHIARO),
+    ]))
+    elementi.append(t)
+    elementi.append(Spacer(1, 8))
+
     totali = {"bufala_dop": 0.0, "bufala": 0.0, "vaccino": 0.0}
     blocco_ingresso = []
 
     if is_dop:
         righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["allevatore"], "bufala_dop"), data_giorno)
         totali["bufala_dop"] += sum(r["kg"] for r in righe)
-        _blocco_categoria(blocco_ingresso, "Allevamenti — Bufala DOP", righe, larghezze_conf)
+        _blocco_categoria(blocco_ingresso, "Allevamenti — Latte di bufala MBC", righe, larghezze_conf)
 
-        righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["caseificio"], "bufala_dop"), data_giorno)
+        # CORREZIONE 29/08: mancavano gli intermediari (es. "Colle Fiori") - prima la
+        # query controllava solo tipo "caseificio", non "intermediario"
+        righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["caseificio", "intermediario"], "bufala_dop"), data_giorno)
         totali["bufala_dop"] += sum(r["kg"] for r in righe)
-        _blocco_categoria(blocco_ingresso, "Caseifici — Bufala DOP", righe, larghezze_conf)
+        _blocco_categoria(blocco_ingresso, "Caseifici / Intermediari — Latte di bufala MBC", righe, larghezze_conf)
 
-    righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["caseificio"], "bufala"), data_giorno)
+    righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["caseificio", "intermediario"], "bufala"), data_giorno)
     totali["bufala"] += sum(r["kg"] for r in righe)
-    _blocco_categoria(blocco_ingresso, "Caseifici — Bufala non-DOP", righe, larghezze_conf)
+    _blocco_categoria(blocco_ingresso, "Caseifici / Intermediari — Latte di bufala", righe, larghezze_conf)
 
     righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["allevatore"], "bufala"), data_giorno)
     totali["bufala"] += sum(r["kg"] for r in righe)
-    _blocco_categoria(blocco_ingresso, "Allevamenti — Bufala non-DOP", righe, larghezze_conf)
+    _blocco_categoria(blocco_ingresso, "Allevamenti — Latte di bufala", righe, larghezze_conf)
 
     righe = _righe_dati_categoria(client, _conferitori_attivi_categoria(client, caseificio_id, ["allevatore", "caseificio", "intermediario"], "vaccino"), data_giorno)
     totali["vaccino"] += sum(r["kg"] for r in righe)
@@ -314,7 +341,7 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
 
     righe_congelato = _righe_congelato(client, caseificio_id, data_giorno)
     totali["bufala"] += sum(r["kg"] for r in righe_congelato)
-    _blocco_categoria(blocco_ingresso, "Congelato — latte scongelato rientrato (bufala non-DOP)", righe_congelato, larghezze_conf)
+    _blocco_categoria(blocco_ingresso, "Congelato — Latte di bufala scongelato rientrato", righe_congelato, larghezze_conf)
 
     conf_cag_b, conf_cag_v = _cagliata_conferitori(client, caseificio_id, data_giorno)
     kg_cagliata_b = sum(r["kg"] for r in conf_cag_b)
@@ -323,22 +350,17 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
     _blocco_categoria(blocco_ingresso, "Cagliata vaccina ricevuta (esclusa dai totali latte)", conf_cag_v, larghezze_conf)
 
     if blocco_ingresso:
-        elementi.append(Paragraph("LATTE IN INGRESSO", STILE_SEZIONE))
         elementi.extend(blocco_ingresso)
     else:
-        elementi.append(Paragraph("LATTE IN INGRESSO", STILE_SEZIONE))
         elementi.append(Paragraph("Nessun conferimento registrato oggi.", STILE_VUOTO))
         elementi.append(Spacer(1, 6))
 
-    # totali e giacenza apertura: sempre visibili (riepilogo/stato, non inserimenti)
+    # totali: sempre visibili (riepilogo calcolato, non un inserimento)
     righe_totale = []
     if is_dop:
-        righe_totale.append(["TOTALE latte bufala DOP in ingresso", f"{round(totali['bufala_dop']):,} kg".replace(",", ".")])
-    righe_totale.append(["TOTALE latte bufala non-DOP in ingresso (incl. congelato)", f"{round(totali['bufala']):,} kg".replace(",", ".")])
+        righe_totale.append(["TOTALE Latte di bufala MBC in ingresso", f"{round(totali['bufala_dop']):,} kg".replace(",", ".")])
+    righe_totale.append(["TOTALE Latte di bufala in ingresso (incl. congelato)", f"{round(totali['bufala']):,} kg".replace(",", ".")])
     righe_totale.append(["TOTALE latte vaccino in ingresso", f"{round(totali['vaccino']):,} kg".replace(",", ".")])
-    if is_dop:
-        giacenza_apertura_dop = registro_calc.giacenza_apertura(client, caseificio_id, "bufala_dop", data_giorno)
-        righe_totale.append(["Giacenza di apertura latte bufala DOP", f"{round(giacenza_apertura_dop):,} kg".replace(",", ".")])
     t = Table(righe_totale, colWidths=[10 * cm, 4 * cm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), COLORE_TOTALE),
@@ -351,20 +373,27 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
     elementi.append(Spacer(1, 4))
 
     # ---------------- SEZIONE 2: LAVORAZIONE ----------------
+    # CORREZIONE 29/08 (errore di ragionamento segnalato): il totale "Latte di bufala MBC
+    # trasformato" deve essere la SOMMA di tutto il latte DOP trasformato (quota MBC pura +
+    # quota usata per il declassato + quota usata per la delattosata) - prima mostravo solo
+    # la quota MBC pura come "totale", senza sommarci le altre due (che comparivano solo come
+    # "di cui" separati, mai aggiunti al totale).
     righe_lav = []
     resa = _resa_dop_giorno(client, caseificio_id, data_giorno) if is_dop else None
     if is_dop:
-        kg_buf_dop = registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
-        _riga_valore_pdf(righe_lav, "Latte bufala DOP trasformato", kg_buf_dop)
+        kg_buf_dop_puro = registro_calc.trasformato(client, caseificio_id, "bufala_dop", data_giorno)
         kg_declassato = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=False)
-        _riga_valore_pdf(righe_lav, "...di cui latte DOP usato per prodotto declassato (non-DOP)", kg_declassato)
         kg_delattosata = _latte_dop_per_gruppo(client, caseificio_id, data_giorno, resa, is_dop_prodotto=True, solo_nome="senza lattosio")
-        _riga_valore_pdf(righe_lav, "...di cui latte DOP usato per mozzarella delattosata", kg_delattosata)
+        kg_buf_dop_totale = kg_buf_dop_puro + kg_declassato + kg_delattosata
+        _riga_valore_pdf(righe_lav, "Latte di bufala MBC trasformato (totale)", kg_buf_dop_totale)
+        _riga_valore_pdf(righe_lav, "...di cui per MBC (DOP)", kg_buf_dop_puro)
+        _riga_valore_pdf(righe_lav, "...di cui per prodotto declassato (non-DOP)", kg_declassato)
+        _riga_valore_pdf(righe_lav, "...di cui per mozzarella delattosata", kg_delattosata)
 
     kg_buf_non_dop = registro_calc.trasformato(client, caseificio_id, "bufala", data_giorno)
-    _riga_valore_pdf(righe_lav, "Latte bufala non-DOP trasformato", kg_buf_non_dop)
+    _riga_valore_pdf(righe_lav, "Latte di bufala trasformato", kg_buf_non_dop)
     kg_buf_mista, kg_vac_mista, kg_cong_uscita, ddt_cong_uscita = _mista_e_congelamento_uscita(client, caseificio_id, data_giorno)
-    _riga_valore_pdf(righe_lav, "...di cui latte bufala usato per la Mozzarella Mista", kg_buf_mista)
+    _riga_valore_pdf(righe_lav, "...di cui latte di bufala usato per la Mozzarella Mista", kg_buf_mista)
     kg_vaccino_trasf = registro_calc.trasformato(client, caseificio_id, "vaccino", data_giorno)
     _riga_valore_pdf(righe_lav, "Latte vaccino trasformato", kg_vaccino_trasf)
     _riga_valore_pdf(righe_lav, "...di cui latte vaccino usato per la Mozzarella Mista", kg_vac_mista)
@@ -417,8 +446,8 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
     elementi.append(Paragraph("GIACENZA DI CHIUSURA", STILE_SEZIONE))
     righe_giac = []
     if is_dop:
-        righe_giac.append(["Latte bufala DOP", f"{round(registro_calc.giacenza_chiusura(client, caseificio_id, 'bufala_dop', data_giorno)):,} kg".replace(",", ".")])
-    righe_giac.append(["Latte bufala non-DOP", f"{round(registro_calc.giacenza_chiusura(client, caseificio_id, 'bufala', data_giorno)):,} kg".replace(",", ".")])
+        righe_giac.append(["Latte di bufala MBC", f"{round(registro_calc.giacenza_chiusura(client, caseificio_id, 'bufala_dop', data_giorno)):,} kg".replace(",", ".")])
+    righe_giac.append(["Latte di bufala", f"{round(registro_calc.giacenza_chiusura(client, caseificio_id, 'bufala', data_giorno)):,} kg".replace(",", ".")])
     t = Table(righe_giac, colWidths=[10 * cm, 4 * cm])
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -429,19 +458,21 @@ def genera_tr_pdf(client, caseificio_id, data_giorno, output_path, prodotti_amme
     elementi.append(Spacer(1, 6))
 
     # ---------------- SEZIONE 5: PRODOTTI OTTENUTI (0 ammesso, per confronto tra giorni) ----------------
+    # CORREZIONE 29/08: aggiunto il lotto di produzione (stessa logica gia' usata in MBC/RBC
+    # - calcola_lotto, in base a come e' configurato il prodotto in Prodotti).
     elementi.append(Paragraph("PRODOTTI OTTENUTI", STILE_SEZIONE))
     prodotti = _prodotti_finiti(client, prodotti_ammessi, data_giorno)
     if prodotti:
-        dati_prod = [["Prodotto", "KG totale", "Vendita diretta", "Vendita a terzi"]]
+        dati_prod = [["Prodotto", "Lotto", "KG totale", "Vendita diretta", "Vendita a terzi"]]
         for p in prodotti:
-            dati_prod.append([p["nome"], f"{p['totale']:g}", f"{p['diretta']:g}", f"{p['terzi']:g}"])
-        t = Table(dati_prod, colWidths=[7 * cm, 3 * cm, 3 * cm, 3 * cm], repeatRows=1)
+            dati_prod.append([p["nome"], p["lotto"], f"{p['totale']:g}", f"{p['diretta']:g}", f"{p['terzi']:g}"])
+        t = Table(dati_prod, colWidths=[6 * cm, 3 * cm, 2.5 * cm, 2.8 * cm, 2.8 * cm], repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), COLORE_INTESTAZIONE_TABELLA),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
             ("GRID", (0, 0), (-1, -1), 0.5, COLORE_GRIGIO_CHIARO),
-            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
         ]))
         elementi.append(t)
     else:
